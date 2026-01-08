@@ -4,8 +4,6 @@
 //! 1. `render_journal_tree` – a detailed tree with scopes and events, suitable for developers.
 //! 2. `render_summary` – a concise summary of all scopes, outcomes, and durations, suitable for humans or snapshots.
 
-use std::time::Duration;
-
 use crate::{journal::Journal, record::RecordKind, outcome::Outcome};
 
 /// Render the journal as a human-friendly tree.
@@ -27,18 +25,19 @@ fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize) {
     });
 
     let outcome = if let Some(exit_rec) = exit {
-        match exit_rec.kind {
-            RecordKind::ScopeExit { outcome, .. } => format!("{:?}", outcome),
-            _ => "?".to_string(),
+        if let RecordKind::ScopeExit { outcome, .. } = exit_rec.kind {
+            format!("{:?}", outcome)
+        } else {
+            "?".to_string()
         }
     } else {
         "Aborted".to_string()
     };
 
-    let duration = if let Some(exit_rec) = exit {
-        exit_rec.time.duration_since(scope.entered_at)
+    let duration_s = if let Some(exit_rec) = exit {
+        (exit_rec.time.saturating_sub(scope.entered_at)) as f64 / 1000.0
     } else {
-        Duration::ZERO
+        0.0
     };
 
     println!(
@@ -46,15 +45,11 @@ fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize) {
         prefix,
         scope.id.0,
         outcome,
-        duration.as_secs_f32()
+        duration_s
     );
 
     // Decide bullet marker
-    let bullet = if cfg!(windows) {
-        "*" // fallback for Windows if Unicode looks bad
-    } else {
-        "•" // Unicode bullet
-    };
+    let bullet = if cfg!(windows) { "*" } else { "•" };
 
     // Print events inside this scope
     for record in journal.records().iter().filter(|r| r.scope == Some(scope.id)) {
@@ -97,7 +92,7 @@ pub fn render_summary(journal: &Journal) {
     let total_duration: f32 = journal.scopes().iter().map(|s| {
         journal.records().iter()
             .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(s.id))
-            .map(|r| r.time.duration_since(s.entered_at).as_secs_f32())
+            .map(|r| (r.time.saturating_sub(s.entered_at)) as f32 / 1000.0)
             .unwrap_or(0.0)
     }).sum();
 
@@ -122,9 +117,9 @@ pub fn render_summary(journal: &Journal) {
             Outcome::Aborted
         };
 
-        let duration = exit.map(|r| r.time.duration_since(scope.entered_at).as_secs_f32())
+        let duration_s = exit.map(|r| (r.time.saturating_sub(scope.entered_at)) as f32 / 1000.0)
             .unwrap_or(0.0);
 
-        println!("  Scope {} → {:?} [{:.3}s]", scope.id.0, outcome, duration);
+        println!("  Scope {} → {:?} [{:.3}s]", scope.id.0, outcome, duration_s);
     }
 }

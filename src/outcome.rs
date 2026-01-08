@@ -2,8 +2,10 @@
 //!
 //! Used by `Journal::exit_scope` and recorded as a `ScopeExit` record.
 
+use serde::Serialize;
+
 /// Outcome of a scope or operation.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
 pub enum Outcome {
     /// The scope completed successfully.
     Success,

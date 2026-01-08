@@ -4,8 +4,6 @@
 //! lifetime and outcomes. Each scope has a unique `ScopeId` and may
 //! be nested under a parent scope.
 
-use std::time::Instant;
-
 use crate::id::ScopeId;
 
 /// A journal scope, representing a logical unit of work.
@@ -16,5 +14,5 @@ pub struct Scope {
     /// Optional parent scope, allowing nested scopes.
     pub parent: Option<ScopeId>,
     /// Timestamp when the scope was entered.
-    pub entered_at: Instant,
+    pub entered_at: u64,
 }

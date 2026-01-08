@@ -13,10 +13,14 @@ It is designed for **systems-level programs**, daemons, and eventually Linux dis
 - RAII-based scope management (`ScopeGuard`)  
 - Works for daemons, interactive apps, or CLI tools  
 - Designed to **respark joy in using computers**  
-- Future roadmap includes:
-  - Optional file logging
-  - Buffered logging
-  - Dual output: terminal + file
+
+---
+
+## Roadmap
+- **Buffered logging** – temporarily store records in memory and flush in batches to improve performance.
+- **Dual output** – simultaneous logging to terminal and file for live monitoring and persistent storage.
+- **Enhanced filtering** – log only certain scopes or events based on criteria (e.g., outcome, tags, or scope depth).
+- **Custom formatters** – allow users to define how events are serialized for files or terminal output.
 
 ---
 
