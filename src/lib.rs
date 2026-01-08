@@ -6,5 +6,8 @@
 
 pub mod id;
 pub mod journal;
+pub mod outcome;
 pub mod record;
+pub mod renderer;
 pub mod scope;
+pub mod scope_guard;
