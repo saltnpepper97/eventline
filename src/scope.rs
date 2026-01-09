@@ -7,7 +7,7 @@
 use crate::id::ScopeId;
 
 /// A journal scope, representing a logical unit of work.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Scope {
     /// Unique identifier for this scope.
     pub id: ScopeId,

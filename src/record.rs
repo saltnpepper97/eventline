@@ -7,7 +7,7 @@ use crate::id::{RecordId, ScopeId};
 use crate::outcome::Outcome;
 
 /// The type of a journal record.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RecordKind {
     /// A generic event with a free-form message.
     Event { message: String },
@@ -16,7 +16,7 @@ pub enum RecordKind {
 }
 
 /// A single journal entry, either an event or a scope exit.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Record {
     /// Unique identifier for this record.
     pub id: RecordId,
