@@ -4,7 +4,7 @@
 //! 1. `render_journal_tree` – a detailed tree with scopes and events, suitable for developers.
 //! 2. `render_summary` – a concise summary of all scopes, outcomes, and durations, suitable for humans or snapshots.
 
-use crate::{journal::Journal, record::RecordKind, outcome::Outcome};
+use crate::{journal::journal::Journal, record::RecordKind, outcome::Outcome};
 
 /// Render the journal as a human-friendly tree.
 /// 

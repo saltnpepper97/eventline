@@ -11,13 +11,13 @@ It is designed for **systems-level programs**, daemons, and eventually Linux dis
 - Human-readable rendering with **Unicode bullets** (`•`)  
 - Summaries of scopes, outcomes, and durations  
 - RAII-based scope management (`ScopeGuard`)  
-- Works for daemons, interactive apps, or CLI tools  
+- Works for daemons, interactive apps, or CLI tools
+- Buffered logging
 - Designed to **respark joy in using computers**  
 
 ---
 
 ## Roadmap
-- **Buffered logging** – temporarily store records in memory and flush in batches to improve performance.
 - **Dual output** – simultaneous logging to terminal and file for live monitoring and persistent storage.
 - **Enhanced filtering** – log only certain scopes or events based on criteria (e.g., outcome, tags, or scope depth).
 - **Custom formatters** – allow users to define how events are serialized for files or terminal output.

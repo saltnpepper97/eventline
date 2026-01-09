@@ -13,12 +13,13 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
+use super::buffer::JournalBuffer;
+use super::utils::{current_millis, millis_to_local};
 
 use crate::id::{RecordId, ScopeId};
 use crate::outcome::Outcome;
-use crate::scope::Scope;
 use crate::record::{Record, RecordKind};
+use crate::scope::Scope;
 
 #[derive(Debug)]
 pub struct Journal {
@@ -40,6 +41,75 @@ impl Journal {
             scopes: Vec::new(),
             records: Vec::new(),
         }
+    }
+
+    /// Create a new buffer for batched logging.
+    ///
+    /// The buffer uses local IDs starting from 0. These are rebased to
+    /// global IDs when the buffer is flushed.
+    ///
+    /// # Example
+    /// ```
+    /// let mut journal = Journal::new();
+    /// let buffer = journal.create_buffer();
+    /// ```
+    pub fn create_buffer(&self) -> JournalBuffer {
+        JournalBuffer::new()
+    }
+
+    /// Flush a buffer's contents into this journal.
+    ///
+    /// All buffered scopes and records have their IDs rebased to global IDs
+    /// based on the current journal state. The buffer is consumed in this process.
+    ///
+    /// **IMPORTANT**: Flush order matters. The order in which buffers are flushed
+    /// determines the final global ID ordering, which affects deterministic replay.
+    ///
+    /// # Example
+    /// ```
+    /// let mut journal = Journal::new();
+    /// let mut buffer = journal.create_buffer();
+    /// buffer.record(None, "Buffered event");
+    /// journal.flush_buffer(buffer);
+    /// assert_eq!(journal.records().len(), 1);
+    /// ```
+    pub fn flush_buffer(&mut self, mut buffer: JournalBuffer) {
+        // DEBUG-ONLY SAFETY CHECKS
+        debug_assert!(
+            buffer.scopes().iter().all(|s| {
+                s.parent.map_or(true, |p| p.0 < buffer.scopes().len() as u64)
+            }),
+            "JournalBuffer contains a scope whose parent is not in the same buffer"
+        );
+
+        debug_assert!(
+            buffer.records().iter().all(|r| {
+                r.scope.map_or(true, |s| s.0 < buffer.scopes().len() as u64)
+            }),
+            "JournalBuffer record references a scope not owned by this buffer"
+        );
+
+        let scope_base = self.scopes.len() as u64;
+        let record_base = self.records.len() as u64;
+
+        // Rebase scope IDs and parent references
+        for scope in &mut buffer.scopes {
+            scope.id.0 += scope_base;
+            if let Some(parent) = &mut scope.parent {
+                parent.0 += scope_base;
+            }
+        }
+
+        // Rebase record IDs and scope references
+        for record in &mut buffer.records {
+            record.id.0 += record_base;
+            if let Some(scope) = &mut record.scope {
+                scope.0 += scope_base;
+            }
+        }
+
+        self.scopes.extend(buffer.scopes);
+        self.records.extend(buffer.records);
     }
 
     /// Enter a new scope, optionally nested under a parent scope.
@@ -150,6 +220,8 @@ impl Journal {
     /// journal.write_to_file("eventline.log").unwrap();
     /// ```
     pub fn write_to_file(&self, path: &str) -> std::io::Result<()> {
+        use std::collections::HashMap;
+
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -157,27 +229,53 @@ impl Journal {
 
         let bullet = if cfg!(windows) { "*" } else { "•" };
 
+        let mut records_by_scope: HashMap<ScopeId, Vec<&Record>> = HashMap::new();
+        let mut exits: HashMap<ScopeId, &Record> = HashMap::new();
+
+        for record in &self.records {
+            if let Some(scope) = record.scope {
+                records_by_scope.entry(scope).or_default().push(record);
+
+                if matches!(record.kind, RecordKind::ScopeExit { .. }) {
+                    exits.insert(scope, record);
+                }
+            }
+        }
+
         for scope in &self.scopes {
-            // Find exit record for outcome and duration
-            let exit = self.records.iter()
-                .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id));
+            let exit = exits.get(&scope.id);
 
-            let outcome = if let Some(r) = exit {
-                if let RecordKind::ScopeExit { outcome, .. } = r.kind { outcome } else { Outcome::Aborted }
-            } else {
-                Outcome::Aborted
-            };
+            let outcome = exit
+                .and_then(|r| {
+                    if let RecordKind::ScopeExit { outcome, .. } = r.kind {
+                        Some(outcome)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(Outcome::Aborted);
 
-            let duration_ms = if let Some(r) = exit { r.time.saturating_sub(scope.entered_at) } else { 0 };
+            let duration_ms = exit
+                .map(|r| r.time.saturating_sub(scope.entered_at))
+                .unwrap_or(0);
+
             let duration_s = duration_ms as f64 / 1000.0;
-
             let ts = millis_to_local(scope.entered_at);
 
-            writeln!(file, "[{}] Scope {} ({:?}) [{:.3}s]", ts, scope.id.0, outcome, duration_s)?;
+            writeln!(
+                file,
+                "[{}] Scope {} ({:?}) [{:.3}s]",
+                ts,
+                scope.id.0,
+                outcome,
+                duration_s
+            )?;
 
-            for record in self.records.iter().filter(|r| r.scope == Some(scope.id)) {
-                if let RecordKind::Event { message } = &record.kind {
-                    writeln!(file, "  {} {}", bullet, message)?;
+            if let Some(records) = records_by_scope.get(&scope.id) {
+                for record in records {
+                    if let RecordKind::Event { message } = &record.kind {
+                        writeln!(file, "  {} {}", bullet, message)?;
+                    }
                 }
             }
         }
@@ -186,19 +284,8 @@ impl Journal {
     }
 }
 
-/// Get current system time in milliseconds since UNIX epoch
-fn current_millis() -> u64 {
-    let now = SystemTime::now();
-    now.duration_since(UNIX_EPOCH)
-        .expect("SystemTime before UNIX_EPOCH")
-        .as_millis() as u64
+impl Default for Journal {
+    fn default() -> Self {
+        Self::new()
+    }
 }
-
-/// Convert milliseconds since UNIX epoch to a human-readable local timestamp
-fn millis_to_local(ms: u64) -> String {
-    use chrono::{Local, TimeZone};
-    let dt = Local.timestamp_millis_opt(ms as i64).single()
-        .unwrap_or_else(|| Local.timestamp_millis_opt(0).single().unwrap());
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
-}
-

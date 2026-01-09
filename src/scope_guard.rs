@@ -6,7 +6,7 @@
 
 use std::ops::Drop;
 
-use crate::{id::ScopeId, journal::Journal, outcome::Outcome};
+use crate::{id::ScopeId, journal::journal::Journal, outcome::Outcome};
 
 /// RAII guard for a scope in the journal.
 /// Automatically records an exit when dropped.
