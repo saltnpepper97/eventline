@@ -3,6 +3,9 @@
 **Eventline** is a human-friendly, append-only logging and tracing system written in Rust.  
 It is designed for **systems-level programs**, daemons, and eventually Linux distributions, offering **deterministic replay**, easy inspection, and logs that make sense to both developers and regular users.
 
+Eventline is ideal when you want logs that explain *what happened*,
+*why it happened*, and *how long it took* — without parsing walls of text.
+
 ---
 
 ## Features
@@ -11,6 +14,7 @@ It is designed for **systems-level programs**, daemons, and eventually Linux dis
 - Human-readable rendering with **Unicode bullets** (`•`)  
 - **Optional color output** for improved readability (success/green, failure/red, aborted/yellow)
 - Summaries of scopes, outcomes, and durations  
+- **Enhanced filtering** – selectively render scopes and events based on outcome, depth, duration, event kind, message content, and more
 - RAII-based scope management (`ScopeGuard`)  
 - Works for daemons, interactive apps, or CLI tools 
 - Temporarily store records in memory and flush in batches
@@ -21,18 +25,27 @@ It is designed for **systems-level programs**, daemons, and eventually Linux dis
 
 ## Roadmap
 
-- **Enhanced filtering** – log only certain scopes or events based on criteria (e.g., outcome, tags, or scope depth)
 - **Custom formatters** – allow users to define how events are serialized for files or terminal output
 - **Structured data** – support for key-value pairs and structured event metadata
-- **Query interface** – programmatic querying of journal history for analysis and debugging
+- **Query interface** – zero-copy, in-memory querying of journal history for analysis and debugging
+- **Tag-based filtering** – add tags to scopes/events for more flexible filtering
+
+---
+
+## Project Status
+
+Eventline is **actively developed and usable today**.
+
+- The core journal model and append-only guarantees are **stable**
+- Renderer output and formatting APIs may evolve before 1.0
+- Feedback and contributions welcome
 
 ---
 
 ## Quick Example
 
 ```rust
-use eventline::journal::Journal;
-use eventline::outcome::Outcome;
+use eventline::{Journal, Outcome};
 
 fn main() {
     let mut journal = Journal::new();
@@ -60,8 +73,7 @@ fn main() {
 For high-throughput scenarios, use `JournalBuffer` to batch writes:
 
 ```rust
-use eventline::journal::Journal;
-use eventline::outcome::Outcome;
+use eventline::{Journal, Outcome};
 
 fn main() {
     let mut journal = Journal::new();
@@ -84,7 +96,7 @@ fn main() {
 ### Custom Output with JournalWriter
 
 ```rust
-use eventline::journal::{Journal, JournalWriter};
+use eventline::{Journal, JournalWriter};
 use std::io;
 
 fn main() {
@@ -113,8 +125,7 @@ fn main() {
 ### Rendering with Color
 
 ```rust
-use eventline::journal::Journal;
-use eventline::render::{render_journal_tree, render_summary};
+use eventline::{Journal, render_journal_tree, render_summary};
 
 fn main() {
     let mut journal = Journal::new();
@@ -124,15 +135,58 @@ fn main() {
     });
     
     // Render with colors enabled
-    render_journal_tree(&journal, true);
+    render_journal_tree(&journal, true, None);
     
     // Or render a summary with colors
-    render_summary(&journal, true);
+    render_summary(&journal, true, None);
     
     // Pass false to disable colors for file output or non-color terminals
-    render_journal_tree(&journal, false);
+    render_journal_tree(&journal, false, None);
 }
 ```
+
+### Filtering Logs
+
+Filter scopes and events based on various criteria:
+
+```rust
+use eventline::{Journal, Filter, ScopeFilter, EventFilter, Outcome, EventKind};
+use eventline::render_journal_tree;
+
+fn main() {
+    let mut journal = Journal::new();
+    
+    // Create some scopes with different outcomes
+    let scope1 = journal.enter_scope(None, Some("database-query"));
+    journal.record(Some(scope1), "Querying users table");
+    journal.warn(Some(scope1), "Slow query detected");
+    journal.exit_scope(scope1, Outcome::Success);
+    
+    let scope2 = journal.enter_scope(None, Some("api-request"));
+    journal.error(Some(scope2), "Connection timeout");
+    journal.exit_scope(scope2, Outcome::Failure);
+    
+    // Filter 1: Show only failed scopes
+    let filter = Filter::scope(ScopeFilter::Outcome(Outcome::Failure));
+    render_journal_tree(&journal, true, Some(&filter));
+    
+    // Filter 2: Show only warnings and errors
+    let filter = Filter::event(
+        EventFilter::Kind(EventKind::Warning)
+            .or(EventFilter::Kind(EventKind::Error))
+    );
+    render_journal_tree(&journal, true, Some(&filter));
+    
+    // Filter 3: Complex filter - failed scopes with errors
+    let filter = Filter::new(
+        ScopeFilter::Outcome(Outcome::Failure),
+        EventFilter::Kind(EventKind::Error)
+    );
+    render_journal_tree(&journal, true, Some(&filter));
+}
+```
+
+See [FILTERING_GUIDE.md](FILTERING_GUIDE.md) for comprehensive filtering examples and use cases.
 
 ---
 
@@ -162,10 +216,12 @@ Once written, journal entries are **never modified or removed**. This guarantees
 - **Journal**: Pure data structure for scopes and events
 - **JournalWriter**: Rendering policy (output format, destinations)
 - **JournalBuffer**: Batching mechanism for high-throughput scenarios
+- **Filter**: Criteria-based selection of scopes and events for rendering
 
 This separation allows the same journal to be:
 - Rendered to terminal with colors
 - Written to files in plain text
+- Filtered for specific outcomes, event kinds, or other criteria
 - Serialized to JSON/binary formats
 - Streamed to remote logging systems
 
@@ -175,6 +231,25 @@ Event kinds (`Info`, `Warning`, `Error`) describe **what happened**, while scope
 - Warnings during successful operations
 - Successful completion despite errors encountered
 - Clear separation between diagnostics and results
+
+### Filtering Philosophy
+
+Filtering is applied at **render time**, not at journal construction. This means:
+- Zero overhead when not filtering
+- The complete journal is always preserved
+- Different views can be created from the same data
+- Filters are composable using logical operators (AND, OR, NOT)
+
+---
+
+## Non-Goals
+
+Eventline is not:
+- A metrics system (use Prometheus, etc.)
+- A distributed tracing backend
+- A replacement for structured logging frameworks (yet)
+
+It focuses on *local, human-readable execution traces*.
 
 ---
 

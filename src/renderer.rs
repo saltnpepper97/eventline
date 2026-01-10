@@ -1,6 +1,7 @@
-//! Human-friendly rendering of `eventline` journals with optional colors.
+//! Human-friendly rendering of `eventline` journals with optional colors and filtering.
 //!
 //! Color is enabled via a `color: bool` flag. No external crates are used.
+//! Filtering allows selective rendering of scopes and events based on criteria.
 
 use crate::{
     colour::{RESET, RED, YELLOW, GREEN, BLUE},
@@ -8,17 +9,56 @@ use crate::{
     record::RecordKind,
     outcome::Outcome,
     event_kind::EventKind,
+    filter::Filter,
 };
 
-/// Render the journal as a human-friendly tree with optional color.
-pub fn render_journal_tree(journal: &Journal, color: bool) {
+/// Render the journal as a human-friendly tree with optional color and filtering.
+///
+/// # Arguments
+/// * `journal` - The journal to render
+/// * `color` - Enable ANSI color codes
+/// * `filter` - Optional filter to apply. If `None`, all scopes and events are rendered.
+///
+/// # Example
+/// ```
+/// use eventline::journal::Journal;
+/// use eventline::filter::{Filter, ScopeFilter};
+/// use eventline::outcome::Outcome;
+///
+/// let mut journal = Journal::new();
+/// let scope = journal.enter_scope_unnamed(None);
+/// journal.record(Some(scope), "test event");
+/// journal.exit_scope(scope, Outcome::Success);
+///
+/// // Render everything
+/// eventline::renderer::render_journal_tree(&journal, true, None);
+///
+/// // Render only failed scopes
+/// let filter = Filter::scope(ScopeFilter::Outcome(Outcome::Failure));
+/// eventline::renderer::render_journal_tree(&journal, true, Some(&filter));
+/// ```
+pub fn render_journal_tree(journal: &Journal, color: bool, filter: Option<&Filter>) {
+    let default_filter = Filter::default();
+    let filter = filter.unwrap_or(&default_filter);
+
     for scope in journal.scopes() {
-        render_scope(journal, scope, 0, color);
+        // Skip scopes that don't match the filter
+        if !filter.matches_scope(scope, journal) {
+            continue;
+        }
+
+        render_scope(journal, scope, 0, color, filter);
     }
 }
 
-/// Render a single scope with indentation and optional color.
-fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize, color: bool) {
+/// Render a single scope with indentation, optional color, and filtering.
+fn render_scope(
+    journal: &Journal,
+    scope: &crate::scope::Scope,
+    indent: usize,
+    color: bool,
+    filter: &Filter,
+) {
     let prefix = " ".repeat(indent * 2);
 
     // Find the scope exit record (if any) to determine outcome and duration
@@ -63,8 +103,13 @@ fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize, c
     // Platform-safe bullet
     let bullet = if cfg!(windows) { "*" } else { "•" };
 
-    // Render events belonging to this scope
+    // Render events belonging to this scope, applying event filter
     for record in journal.records().iter().filter(|r| r.scope == Some(scope.id)) {
+        // Skip events that don't match the event filter
+        if !filter.matches_event(record) {
+            continue;
+        }
+
         if let RecordKind::Event { kind, message } = &record.kind {
             // Determine event label and optional color
             let (label, color_code) = match kind {
@@ -84,30 +129,50 @@ fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize, c
 
             // Render arrow pointing right toward the event text for warnings/errors
             if matches!(kind, EventKind::Warning | EventKind::Error) {
-                println!("{}    → {}", prefix, message);
+                println!("{}  ↳ {}", prefix, message);
             }
         }
     }
 }
 
-/// Render a concise summary of the journal with optional color.
+/// Render a concise summary of the journal with optional color and filtering.
 ///
 /// Displays:
-/// - Total number of scopes and events
+/// - Total number of scopes and events (after filtering)
 /// - Count of each scope outcome
 /// - Total cumulative scope duration
 /// - Per-scope summary including name, ID, outcome, and duration
-pub fn render_summary(journal: &Journal, color: bool) {
-    let total_scopes = journal.scopes().len();
-    let total_events = journal.records().iter()
+///
+/// # Arguments
+/// * `journal` - The journal to summarize
+/// * `color` - Enable ANSI color codes
+/// * `filter` - Optional filter to apply. If `None`, all scopes and events are included.
+pub fn render_summary(journal: &Journal, color: bool, filter: Option<&Filter>) {
+    let default_filter = Filter::default();
+    let filter = filter.unwrap_or(&default_filter);
+
+    // Filter scopes
+    let filtered_scopes: Vec<_> = journal
+        .scopes()
+        .iter()
+        .filter(|s| filter.matches_scope(s, journal))
+        .collect();
+
+    let total_scopes = filtered_scopes.len();
+
+    // Filter events
+    let total_events = journal
+        .records()
+        .iter()
         .filter(|r| matches!(r.kind, RecordKind::Event { .. }))
+        .filter(|r| filter.matches_event(r))
         .count();
 
     let mut success = 0;
     let mut failure = 0;
     let mut aborted = 0;
 
-    for scope in journal.scopes() {
+    for scope in &filtered_scopes {
         let outcome = journal.records().iter()
             .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id))
             .map(|r| if let RecordKind::ScopeExit { outcome, .. } = r.kind { outcome } else { Outcome::Aborted })
@@ -120,7 +185,7 @@ pub fn render_summary(journal: &Journal, color: bool) {
         }
     }
 
-    let total_duration: f32 = journal.scopes().iter().map(|s| {
+    let total_duration: f32 = filtered_scopes.iter().map(|s| {
         journal.records().iter()
             .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(s.id))
             .map(|r| (r.time.saturating_sub(s.entered_at)) as f32 / 1000.0)
@@ -134,7 +199,7 @@ pub fn render_summary(journal: &Journal, color: bool) {
     println!("  Total duration: {:.3}s", total_duration);
 
     println!("\nPer-scope summary:");
-    for scope in journal.scopes() {
+    for scope in &filtered_scopes {
         let exit = journal.records().iter()
             .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id));
 

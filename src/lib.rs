@@ -6,6 +6,7 @@
 
 pub mod colour;
 pub mod event_kind;
+pub mod filter;
 pub mod id;
 pub mod journal;
 pub mod outcome;
