@@ -259,7 +259,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-eventline = "0.1"
+eventline = "0.1.1"
 ```
 
 ---
