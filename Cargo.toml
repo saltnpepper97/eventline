@@ -2,8 +2,20 @@
 name = "eventline"
 version = "0.1.0"
 edition = "2024"
+authors = ["Dustin Pilgrim <dustin.pilgrim1997@gmail.com>"]
+description = "A structured event journaling library with scoped timelines, outcomes, and serialization support."
+license = "MIT"
+repository = "https://github.com/saltnpepper97/eventline"
+documentation = "https://docs.rs/eventline"
+keywords = ["event", "journal", "logging", "serde", "timeline", "scoped"]
+categories = ["development-tools", "logging", "data-structures"]
+readme = "README.md"
+rust-version = "1.90"
 
 [dependencies]
 chrono = "0.4.42"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+
+[dev-dependencies]
+tempfile = "3.23.0"
