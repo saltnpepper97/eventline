@@ -19,5 +19,5 @@ pub use event_kind::EventKind;
 pub use filter::{Filter, EventFilter, ScopeFilter};
 pub use outcome::Outcome;
 pub use scope_guard::ScopeGuard;
-pub use journal::Journal;
+pub use journal::{Journal, JournalWriter};
 pub use renderer::{render_journal_tree, render_summary};
