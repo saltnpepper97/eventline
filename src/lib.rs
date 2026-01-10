@@ -4,6 +4,7 @@
 //! in what causal context, without assuming logging,,
 //! tracing, or telemetry semantics.
 
+pub mod colour;
 pub mod event_kind;
 pub mod id;
 pub mod journal;

@@ -9,6 +9,7 @@ It is designed for **systems-level programs**, daemons, and eventually Linux dis
 
 - Append-only journal for **scopes and events**  
 - Human-readable rendering with **Unicode bullets** (`•`)  
+- **Optional color output** for improved readability (success/green, failure/red, aborted/yellow)
 - Summaries of scopes, outcomes, and durations  
 - RAII-based scope management (`ScopeGuard`)  
 - Works for daemons, interactive apps, or CLI tools 
@@ -106,6 +107,30 @@ fn main() {
             &journal
         )
         .unwrap();
+}
+```
+
+### Rendering with Color
+
+```rust
+use eventline::journal::Journal;
+use eventline::render::{render_journal_tree, render_summary};
+
+fn main() {
+    let mut journal = Journal::new();
+    
+    journal.scoped(None, Some("Task"), |journal, scope| {
+        journal.record(Some(scope), "Processing data...");
+    });
+    
+    // Render with colors enabled
+    render_journal_tree(&journal, true);
+    
+    // Or render a summary with colors
+    render_summary(&journal, true);
+    
+    // Pass false to disable colors for file output or non-color terminals
+    render_journal_tree(&journal, false);
 }
 ```
 

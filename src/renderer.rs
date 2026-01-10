@@ -1,42 +1,24 @@
-//! Human-friendly rendering of `eventline` journals.
+//! Human-friendly rendering of `eventline` journals with optional colors.
 //!
-//! This module provides simple, opinionated renderers intended for
-//! direct human consumption (stdout, debug logs, snapshots).
-//!
-//! It deliberately avoids colors, filtering, or output configuration.
-//! For structured or configurable output, use [`JournalWriter`] instead.
-//!
-//! Provided views:
-//! 1. [`render_journal_tree`] – hierarchical view of scopes and events
-//! 2. [`render_summary`] – concise session overview
+//! Color is enabled via a `color: bool` flag. No external crates are used.
 
 use crate::{
+    colour::{RESET, RED, YELLOW, GREEN, BLUE},
     journal::Journal,
     record::RecordKind,
     outcome::Outcome,
     event_kind::EventKind,
 };
 
-/// Render the journal as a human-friendly tree.
-///
-/// Each scope is displayed with:
-/// - Scope name (or `"unnamed"`)
-/// - Scope ID
-/// - Outcome
-/// - Duration
-///
-/// Events belonging to the scope are listed underneath with a bullet.
-/// Event kinds are rendered textually (e.g. `error:`, `warning:`) to make
-/// failures immediately visible without relying on symbols or colors.
-///
-/// This renderer is intended for developer-facing diagnostics and debugging.
-pub fn render_journal_tree(journal: &Journal) {
+/// Render the journal as a human-friendly tree with optional color.
+pub fn render_journal_tree(journal: &Journal, color: bool) {
     for scope in journal.scopes() {
-        render_scope(journal, scope, 0);
+        render_scope(journal, scope, 0, color);
     }
 }
 
-fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize) {
+/// Render a single scope with indentation and optional color.
+fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize, color: bool) {
     let prefix = " ".repeat(indent * 2);
 
     // Find the scope exit record (if any) to determine outcome and duration
@@ -44,6 +26,7 @@ fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize) {
         matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id)
     });
 
+    // Determine outcome of the scope
     let outcome = exit
         .and_then(|r| {
             if let RecordKind::ScopeExit { outcome, .. } = r.kind {
@@ -54,18 +37,26 @@ fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize) {
         })
         .unwrap_or(Outcome::Aborted);
 
+    // Compute duration in seconds
     let duration_s = exit
         .map(|r| (r.time.saturating_sub(scope.entered_at)) as f64 / 1000.0)
         .unwrap_or(0.0);
 
     let name = scope.name.as_deref().unwrap_or("unnamed");
 
+    // Colorize scope outcome
+    let outcome_str = match outcome {
+        Outcome::Success => if color { format!("{}Success{}", GREEN, RESET) } else { "Success".into() },
+        Outcome::Failure => if color { format!("{}Failure{}", RED, RESET) } else { "Failure".into() },
+        Outcome::Aborted => if color { format!("{}Aborted{}", YELLOW, RESET) } else { "Aborted".into() },
+    };
+
     println!(
-        "{}Scope: {} (ID: {}) [{:?}] [{:.3}s]",
+        "{}Scope: {} (ID: {}) [{}] [{:.3}s]",
         prefix,
         name,
         scope.id.0,
-        outcome,
+        outcome_str,
         duration_s
     );
 
@@ -75,34 +66,38 @@ fn render_scope(journal: &Journal, scope: &crate::scope::Scope, indent: usize) {
     // Render events belonging to this scope
     for record in journal.records().iter().filter(|r| r.scope == Some(scope.id)) {
         if let RecordKind::Event { kind, message } = &record.kind {
-            let label = match kind {
-                EventKind::Info => "",
-                EventKind::Debug => "debug: ",
-                EventKind::Warning => "warning: ",
-                EventKind::Error => "error: ",
+            // Determine event label and optional color
+            let (label, color_code) = match kind {
+                EventKind::Info => ("", None),
+                EventKind::Debug => ("debug: ", Some(BLUE)),
+                EventKind::Warning => ("warning: ", Some(YELLOW)),
+                EventKind::Error => ("error: ", Some(RED)),
             };
 
-            println!(
-                "{}  {} {}{}",
-                prefix,
-                bullet,
-                label,
-                message
-            );
+            // Render the event line
+            if color {
+                let colored_label = color_code.map_or(label.to_string(), |c| format!("{}{}{}", c, label, RESET));
+                println!("{}  {} {}", prefix, bullet, format!("{}{}", colored_label, message));
+            } else {
+                println!("{}  {} {}{}", prefix, bullet, label, message);
+            }
+
+            // Render arrow pointing right toward the event text for warnings/errors
+            if matches!(kind, EventKind::Warning | EventKind::Error) {
+                println!("{}    → {}", prefix, message);
+            }
         }
     }
 }
 
-/// Render a concise summary of the journal.
-///
-/// This view is intended for snapshots, CI output, or post-run summaries.
+/// Render a concise summary of the journal with optional color.
 ///
 /// Displays:
 /// - Total number of scopes and events
 /// - Count of each scope outcome
 /// - Total cumulative scope duration
 /// - Per-scope summary including name, ID, outcome, and duration
-pub fn render_summary(journal: &Journal) {
+pub fn render_summary(journal: &Journal, color: bool) {
     let total_scopes = journal.scopes().len();
     let total_events = journal.records().iter()
         .filter(|r| matches!(r.kind, RecordKind::Event { .. }))
@@ -115,13 +110,7 @@ pub fn render_summary(journal: &Journal) {
     for scope in journal.scopes() {
         let outcome = journal.records().iter()
             .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id))
-            .map(|r| {
-                if let RecordKind::ScopeExit { outcome, .. } = r.kind {
-                    outcome
-                } else {
-                    Outcome::Aborted
-                }
-            })
+            .map(|r| if let RecordKind::ScopeExit { outcome, .. } = r.kind { outcome } else { Outcome::Aborted })
             .unwrap_or(Outcome::Aborted);
 
         match outcome {
@@ -149,28 +138,19 @@ pub fn render_summary(journal: &Journal) {
         let exit = journal.records().iter()
             .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id));
 
-        let outcome = exit
-            .and_then(|r| {
-                if let RecordKind::ScopeExit { outcome, .. } = r.kind {
-                    Some(outcome)
-                } else {
-                    None
-                }
-            })
+        let outcome = exit.and_then(|r| if let RecordKind::ScopeExit { outcome, .. } = r.kind { Some(outcome) } else { None })
             .unwrap_or(Outcome::Aborted);
 
-        let duration_s = exit
-            .map(|r| (r.time.saturating_sub(scope.entered_at)) as f32 / 1000.0)
-            .unwrap_or(0.0);
-
+        let duration_s = exit.map(|r| (r.time.saturating_sub(scope.entered_at)) as f32 / 1000.0).unwrap_or(0.0);
         let name = scope.name.as_deref().unwrap_or("unnamed");
 
-        println!(
-            "  Scope: {} (ID: {}) → {:?} [{:.3}s]",
-            name,
-            scope.id.0,
-            outcome,
-            duration_s
-        );
+        // Colorize outcome
+        let outcome_str = match outcome {
+            Outcome::Success => if color { format!("{}Success{}", GREEN, RESET) } else { "Success".into() },
+            Outcome::Failure => if color { format!("{}Failure{}", RED, RESET) } else { "Failure".into() },
+            Outcome::Aborted => if color { format!("{}Aborted{}", YELLOW, RESET) } else { "Aborted".into() },
+        };
+
+        println!("  Scope: {} (ID: {}) → {} [{:.3}s]", name, scope.id.0, outcome_str, duration_s);
     }
 }
