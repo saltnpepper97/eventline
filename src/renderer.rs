@@ -129,7 +129,7 @@ fn render_scope(
 
             // Render arrow pointing right toward the event text for warnings/errors
             if matches!(kind, EventKind::Warning | EventKind::Error) {
-                println!("{}  ↳ {}", prefix, message);
+                println!("{}    ↳ {}", prefix, message);
             }
         }
     }
