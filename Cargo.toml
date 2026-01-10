@@ -7,10 +7,11 @@ description = "A structured event journaling library with scoped timelines, outc
 license = "MIT"
 repository = "https://github.com/saltnpepper97/eventline"
 documentation = "https://docs.rs/eventline"
-keywords = ["event", "journal", "logging", "serde", "timeline", "scoped"]
+keywords = ["event", "journal", "logging", "serde", "timeline"]
 categories = ["development-tools", "logging", "data-structures"]
 readme = "README.md"
 rust-version = "1.90"
+
 
 [dependencies]
 chrono = "0.4.42"
