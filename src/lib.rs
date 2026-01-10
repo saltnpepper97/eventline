@@ -15,6 +15,8 @@ pub mod renderer;
 pub mod scope;
 pub mod scope_guard;
 
+pub use event_kind::EventKind;
+pub use filter::{Filter, EventFilter, ScopeFilter};
 pub use outcome::Outcome;
 pub use scope_guard::ScopeGuard;
 pub use journal::Journal;
