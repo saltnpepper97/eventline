@@ -15,4 +15,6 @@ pub struct Scope {
     pub parent: Option<ScopeId>,
     /// Timestamp when the scope was entered.
     pub entered_at: u64,
+    /// Optional human-readable name for the scope.
+    pub name: Option<String>,
 }

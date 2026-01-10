@@ -5,8 +5,7 @@
 //! the append-only invariant and guarantees that aborted scopes are recorded.
 
 use std::ops::Drop;
-
-use crate::{id::ScopeId, journal::journal::Journal, outcome::Outcome};
+use crate::{id::ScopeId, journal::Journal, outcome::Outcome};
 
 /// RAII guard for a scope in the journal.
 /// Automatically records an exit when dropped.
@@ -21,7 +20,12 @@ impl<'a> ScopeGuard<'a> {
     ///
     /// # Example
     /// ```
-    /// let scope_id = journal.enter_scope(None);
+    /// use eventline::journal::Journal;
+    /// use eventline::scope_guard::ScopeGuard;
+    /// use eventline::outcome::Outcome;
+    /// 
+    /// let mut journal = Journal::new();
+    /// let scope_id = journal.enter_scope_unnamed(None);
     /// let mut guard = ScopeGuard::new(&mut journal, scope_id);
     /// // perform work in the scope...
     /// guard.exit(Outcome::Success); // optional, will auto-abort if not called

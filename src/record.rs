@@ -5,15 +5,23 @@
 
 use crate::id::{RecordId, ScopeId};
 use crate::outcome::Outcome;
+use crate::event_kind::EventKind;
 
 /// The type of a journal record.
 #[derive(Debug, Clone)]
 pub enum RecordKind {
-    /// A generic event with a free-form message.
-    Event { message: String },
-    /// Marks the exit of a scope, capturing its outcome and exit time.
-    ScopeExit { outcome: Outcome, exited_at: u64 },
+    /// A generic event with semantic meaning.
+    Event {
+        kind: EventKind,
+        message: String,
+    },
+    /// Marks the exit of a scope.
+    ScopeExit {
+        outcome: Outcome,
+        exited_at: u64,
+    },
 }
+
 
 /// A single journal entry, either an event or a scope exit.
 #[derive(Debug, Clone)]

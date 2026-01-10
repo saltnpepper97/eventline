@@ -4,6 +4,7 @@
 //! in what causal context, without assuming logging,,
 //! tracing, or telemetry semantics.
 
+pub mod event_kind;
 pub mod id;
 pub mod journal;
 pub mod outcome;
@@ -11,3 +12,8 @@ pub mod record;
 pub mod renderer;
 pub mod scope;
 pub mod scope_guard;
+
+pub use outcome::Outcome;
+pub use scope_guard::ScopeGuard;
+pub use journal::Journal;
+pub use renderer::{render_journal_tree, render_summary};

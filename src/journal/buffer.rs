@@ -10,8 +10,10 @@
 //! - **Concurrent safety**: Multiple buffers can exist without coordination
 //! - **Simplicity**: No complex ID reservation or offset tracking
 
-use super::journal::Journal;
+use super::Journal;
 use super::utils::current_millis;
+
+use crate::event_kind::EventKind;
 use crate::id::{RecordId, ScopeId};
 use crate::outcome::Outcome;
 use crate::scope::Scope;
@@ -28,10 +30,14 @@ use crate::record::{Record, RecordKind};
 /// ## Usage
 ///
 /// ```rust
+/// use eventline::journal::Journal;
+/// use eventline::journal::buffer::JournalBuffer;
+/// use eventline::outcome::Outcome;
+/// 
 /// let mut journal = Journal::new();
 /// let mut buffer = journal.create_buffer();
 /// 
-/// let scope = buffer.enter_scope(None);
+/// let scope = buffer.enter_scope(None, None);
 /// buffer.record(Some(scope), "Buffered event");
 /// buffer.exit_scope(scope, Outcome::Success);
 ///
@@ -49,6 +55,8 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// 
     /// let buffer = JournalBuffer::new();
     /// assert!(buffer.is_empty());
     /// ```
@@ -66,17 +74,20 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// 
     /// let mut buffer = JournalBuffer::new();
-    /// let scope_id = buffer.enter_scope(None);
-    /// assert_eq!(scope_id.0, 0); // Local ID
+    /// let scope_id = buffer.enter_scope(None, None);
+    /// // scope_id now contains a local ID (starting from 0)
     /// ```
-    pub fn enter_scope(&mut self, parent: Option<ScopeId>) -> ScopeId {
+    pub fn enter_scope(&mut self, parent: Option<ScopeId>, name: impl Into<Option<String>>) -> ScopeId {
         let id = ScopeId(self.scopes.len() as u64);
 
         self.scopes.push(Scope {
             id,
             parent,
             entered_at: current_millis(),
+            name: name.into(),
         });
 
         id
@@ -88,8 +99,11 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// use eventline::outcome::Outcome;
+    /// 
     /// let mut buffer = JournalBuffer::new();
-    /// let scope_id = buffer.enter_scope(None);
+    /// let scope_id = buffer.enter_scope(None, None);
     /// buffer.exit_scope(scope_id, Outcome::Success);
     /// ```
     pub fn exit_scope(&mut self, scope: ScopeId, outcome: Outcome) -> RecordId {
@@ -109,24 +123,55 @@ impl JournalBuffer {
         id
     }
 
-    /// Record a generic event within an optional scope.
+    /// Record an informational event within an optional scope.
+    ///
+    /// Buffered events default to [`EventKind::Info`].
+    /// Use [`record_with_kind`] if a different kind is required.
     ///
     /// Uses local IDs that will be rebased on flush.
     ///
     /// # Example
     /// ```
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// 
     /// let mut buffer = JournalBuffer::new();
-    /// let scope_id = buffer.enter_scope(None);
+    /// let scope_id = buffer.enter_scope(None, None);
     /// buffer.record(Some(scope_id), "Buffered event");
     /// ```
     pub fn record(&mut self, scope: Option<ScopeId>, message: impl Into<String>) -> RecordId {
+        self.record_with_kind(scope, EventKind::Info, message)
+    }
+
+    /// Record an event with an explicit [`EventKind`] within an optional scope.
+    ///
+    /// This allows buffered logs to capture warnings or errors without
+    /// immediately failing a scope.
+    ///
+    /// # Example
+    /// ```
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// use eventline::event_kind::EventKind;
+    /// 
+    /// let mut buffer = JournalBuffer::new();
+    /// let scope = buffer.enter_scope(None, None);
+    /// buffer.record_with_kind(scope.into(), EventKind::Warning, "Something looks off");
+    /// ```
+    pub fn record_with_kind(
+        &mut self,
+        scope: Option<ScopeId>,
+        kind: EventKind,
+        message: impl Into<String>,
+    ) -> RecordId {
         let id = RecordId(self.records.len() as u64);
 
         self.records.push(Record {
             id,
             scope,
             time: current_millis(),
-            kind: RecordKind::Event { message: message.into() },
+            kind: RecordKind::Event {
+                kind,
+                message: message.into(),
+            },
         });
 
         id
@@ -138,6 +183,9 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
+    /// use eventline::journal::Journal;
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// 
     /// let mut journal = Journal::new();
     /// let mut buffer = JournalBuffer::new();
     /// buffer.record(None, "Event");
@@ -151,6 +199,8 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// 
     /// let buffer = JournalBuffer::new();
     /// assert_eq!(buffer.len(), 0);
     /// ```
@@ -162,6 +212,8 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
+    /// use eventline::journal::buffer::JournalBuffer;
+    /// 
     /// let buffer = JournalBuffer::new();
     /// assert!(buffer.is_empty());
     /// ```

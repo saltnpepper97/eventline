@@ -1,7 +1,8 @@
 use std::io::Write;
-use super::journal::Journal;
+use super::Journal;
 use super::utils::millis_to_local;
 
+use crate::event_kind::EventKind;
 use crate::id::ScopeId;
 use crate::outcome::Outcome;
 use crate::record::{Record, RecordKind};
@@ -140,9 +141,22 @@ impl JournalWriter {
             if let Some(events) = events_by_scope.get(&scope.id) {
                 for event in events {
                     // Safe unwrap: events_by_scope only contains Event records
-                    if let RecordKind::Event { message } = &event.kind {
+                    if let RecordKind::Event { kind, message } = &event.kind {
+                        let prefix = match kind {
+                            EventKind::Info => "",
+                            EventKind::Warning => "warning: ",
+                            EventKind::Error => "error: ",
+                            EventKind::Debug => "debug: ",
+                        };
+
                         for writer in writers.iter_mut() {
-                            writeln!(writer, "  {} {}", bullet, message)?;
+                            writeln!(
+                                writer,
+                                "  {} {}{}",
+                                bullet,
+                                prefix,
+                                message
+                            )?;
                         }
                     }
                 }
@@ -185,9 +199,9 @@ impl JournalWriter {
     /// let journal = Journal::new();
     /// let mut file = std::fs::File::create("output.log")?;
     /// 
-    /// // Write to both stdout and file (different types!)
+    /// // Write to both stdout and file
     /// JournalWriter::new().write_to_all(
-    ///     &mut [&mut io::stdout(), &mut file],
+    ///     &mut [&mut io::stdout() as &mut dyn std::io::Write, &mut file as &mut dyn std::io::Write],
     ///     &journal
     /// )?;
     /// # Ok::<(), std::io::Error>(())
@@ -214,7 +228,7 @@ mod tests {
     #[test]
     fn test_journal_is_cloneable() {
         let mut journal = Journal::new();
-        journal.enter_scope(None);
+        journal.enter_scope_unnamed(None);
         
         let _cloned = journal.clone();
         // Journal can be cheaply cloned without output policy
@@ -223,7 +237,7 @@ mod tests {
     #[test]
     fn test_write_to_multiple_sinks() -> std::io::Result<()> {
         let mut journal = Journal::new();
-        let scope = journal.enter_scope(None);
+        let scope = journal.enter_scope_unnamed(None);
         journal.record(Some(scope), "test event");
         journal.exit_scope(scope, Outcome::Success);
 
@@ -245,7 +259,7 @@ mod tests {
         use std::io::Cursor;
         
         let mut journal = Journal::new();
-        let scope = journal.enter_scope(None);
+        let scope = journal.enter_scope_unnamed(None);
         journal.record(Some(scope), "mixed types test");
         journal.exit_scope(scope, Outcome::Success);
 
