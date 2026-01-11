@@ -11,6 +11,7 @@ Eventline records *what happened*, *when it happened*, and *in what causal conte
 - **Append-only journal** — never mutates or removes records
 - **Scoped execution** — track outcomes and durations
 - **Event kinds** — Info, Warning, Error, Debug (separate from outcomes)
+- Runtime log levels — filter events globally (Debug, Info, Warning, Error)
 - **Flexible filtering** — by outcome, depth, duration, event kind, message content
 - **Human-readable output** — Unicode bullets, optional color coding
 - **High-throughput batching** — `JournalBuffer` for batch writes
@@ -27,15 +28,23 @@ For applications and daemons:
 
 ```rust
 use eventline::runtime;
+use eventline::runtime::log_level::{set_log_level, LogLevel};
+use eventline::{event_info, event_warn, event_error, event_debug};
 
 fn main() {
     runtime::init();
     
-    event_info!("Server started on port 8080");
-    
+    // Only record warnings and errors
+    set_log_level(LogLevel::Warning);
+
+    event_info!("This will NOT be logged");
+    event_warn!("Cache approaching limit");
+    event_error!("Database connection failed");
+    event_debug!("Verbose debug info"); // filtered out
+       
     event_scope!("RequestHandler", {
-        event_info!("Processing request");
-        // ... work ...
+        event_info!("Processing request"); // filtered out
+        event_warn!("Retry attempt failed"); // recorded
     });
     
     runtime::with_journal(|journal| {
@@ -59,8 +68,8 @@ journal.scoped(None, Some("Task"), |journal, scope| {
 });
 
 journal.write_to_file("events.log").unwrap();
-```
 
+```
 ---
 
 ## Architecture
@@ -80,14 +89,15 @@ journal.write_to_file("events.log").unwrap();
 ```
 
 **Core Layer** (always available):
-- [`Journal`](journal/struct.Journal.html) — Pure data structure
-- [`Scope`](scope/struct.Scope.html) — Logical units of work
-- [`Record`](record/struct.Record.html) — Individual events
-- [`Filter`](filter/struct.Filter.html) — Composable criteria
+- **Journal** — Pure data structure
+- **Scope** — Logical units of work
+- **Record**  — Individual events
+- **Filter** — Composable criteria
 
 **Runtime Layer** (optional):
-- [`runtime`](runtime/index.html) — Global facade
-- Macros — Zero-overhead convenience
+- **runtime** — Global facade
+- **Macros** — Zero-overhead convenience
+- **Log levels** — filter events at runtime
 
 ---
 
@@ -268,7 +278,7 @@ It is **not**:
 - A distributed tracing backend
 - A replacement for structured logging (yet)
 
-It focuses on *local, human-readable execution traces*.
+Focuses on local, human-readable execution traces with optional runtime log filtering.
 
 ---
 
