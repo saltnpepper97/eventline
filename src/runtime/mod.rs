@@ -59,7 +59,8 @@ pub mod log_level;
 pub mod macros;
 pub mod tests;
 
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, LazyLock};
+use tokio::sync::{Mutex, RwLock};
 use std::collections::HashSet;
 use futures::FutureExt;
 
@@ -71,7 +72,8 @@ use crate::outcome::Outcome;
 /// Global runtime singleton.
 ///
 /// Uses RwLock to allow reset() for testing without blocking readers.
-static RUNTIME: RwLock<Option<Runtime>> = RwLock::new(None);
+static RUNTIME: LazyLock<RwLock<Option<Arc<Runtime>>>> =
+    LazyLock::new(|| RwLock::new(None));
 
 // Thread-local scope tracking.
 // Each thread maintains its own current scope context, allowing
@@ -87,58 +89,82 @@ struct Runtime {
     written_headers: Mutex<HashSet<ScopeId>>
 }
 
-/// Initialize the global runtime.
+/// Returns a clone of the global runtime [`Arc<Runtime>`].
 ///
-/// This must be called once before using any runtime functions.
-/// Calling this multiple times will reinitialize the runtime,
-/// discarding any previous journal state.
+/// Panics if the runtime is not initialized.
+///
+/// This is useful for advanced operations such as async scopes or direct journal access.
+/// For general logging, use the high-level API: [`record`], [`info`], [`warn`], [`error`], [`debug`].
 ///
 /// # Example
 ///
 /// ```
 /// use eventline::runtime;
 ///
-/// fn main() {
-///     runtime::init();
-///     
-///     // Now you can use runtime::record, runtime::scoped, etc.
-/// }
+/// runtime::init();
+///
+/// let rt = runtime::get_runtime(); // Arc<Runtime>
+/// let mut journal = rt.journal.lock().unwrap();
+/// journal.record(None, "Direct log entry");
 /// ```
-pub fn init() {
-    let mut runtime = RUNTIME.write().unwrap();
-    *runtime = Some(Runtime {
-        journal: Mutex::new(Journal::new()),
-        written_headers: Mutex::new(HashSet::new()),
-    });
+async fn get_runtime() -> Arc<Runtime> {
+    let runtime_guard = RUNTIME.read().await;
+    runtime_guard
+        .as_ref()
+        .expect("eventline runtime not initialized - call runtime::init() first")
+        .clone()
 }
 
-/// Reset the runtime to uninitialized state.
+/// Initializes the global Eventline runtime.
 ///
-/// This is primarily useful for testing, where you need a clean slate
-/// between test runs. In production code, this should rarely be needed.
+/// Must be called once before using any logging or scoped operations.  
+/// If called multiple times, it will reset the previous runtime state.
+///
+/// After initialization, functions like [`record`], [`scoped`], and console logging are available.
 ///
 /// # Example
 ///
 /// ```
 /// use eventline::runtime;
 ///
-/// #[test]
-/// fn test_with_clean_state() {
-///     runtime::init();
-///     // ... test code ...
-///     runtime::reset(); // Clean up for next test
-/// }
+/// runtime::init();
+/// runtime::info("Application started");
 /// ```
-pub fn reset() {
-    // Clear runtime state
-    let mut runtime = RUNTIME.write().unwrap();
-    *runtime = None;
-    
-    // Clear thread-local scope
+pub async fn init() {
+    let mut guard = RUNTIME.write().await;
+    *guard = Some(Arc::new(Runtime {
+        journal: Mutex::new(Journal::new()),
+        written_headers: Mutex::new(HashSet::new()),
+    }));
+}
+
+/// Resets the global runtime to an uninitialized state.
+///
+/// Primarily useful for testing scenarios where a clean runtime state is needed
+/// between test runs. Also clears the thread-local current scope.
+///
+/// # Example
+///
+/// ```
+/// use eventline::runtime;
+///
+/// runtime::init();
+/// runtime::info("Test event");
+/// runtime::reset(); // resets runtime for next test
+/// ```
+pub async fn reset() {
+    let mut guard = RUNTIME.write().await;
+    *guard = None;
+
     CURRENT_SCOPE.with(|s| s.set(None));
 }
 
-/// Check if the runtime has been initialized.
+/// Returns whether the global runtime has been initialized.
+///
+/// # Returns
+///
+/// - `true` if the runtime is initialized (i.e., [`init`] has been called)
+/// - `false` if the runtime is uninitialized
 ///
 /// # Example
 ///
@@ -149,8 +175,8 @@ pub fn reset() {
 /// runtime::init();
 /// assert!(runtime::is_initialized());
 /// ```
-pub fn is_initialized() -> bool {
-    RUNTIME.read().unwrap().is_some()
+pub async fn is_initialized() -> bool {
+    RUNTIME.read().await.is_some()
 }
 
 /// Enable or disable automatic console output for events.
@@ -229,7 +255,7 @@ pub fn is_console_color_enabled() -> bool {
 ///
 /// runtime::record(EventKind::Info, "Application started");
 /// ```
-pub fn record(kind: EventKind, message: impl Into<String>) {
+pub async fn record(kind: EventKind, message: impl Into<String>) {
     if !log_level::log_enabled(kind) {
         return;
     }
@@ -237,10 +263,10 @@ pub fn record(kind: EventKind, message: impl Into<String>) {
     let message = message.into();
 
     // --- Journal ---
-    if let Some(rt) = RUNTIME.read().unwrap().as_ref() {
+    if let Some(rt) = RUNTIME.read().await.as_ref() {
         let scope = CURRENT_SCOPE.with(|s| s.get());
 
-        let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+        let mut journal = rt.journal.lock().await;
         journal.record_with_kind(scope, kind, &message);
     }
 
@@ -250,8 +276,8 @@ pub fn record(kind: EventKind, message: impl Into<String>) {
     }
 
     // --- Live log ---
-    if let Some(rt) = RUNTIME.read().unwrap().as_ref() {
-        let journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(rt) = RUNTIME.read().await.as_ref() {
+        let journal = rt.journal.lock().await;
 
         // Find the current scope
         if let Some(current_scope_id) = journal.scopes().iter().rev()
@@ -259,7 +285,7 @@ pub fn record(kind: EventKind, message: impl Into<String>) {
             .map(|s| s.id)
         {
             // --- Use written_headers set instead of Journal methods ---
-            let mut headers = rt.written_headers.lock().unwrap();
+            let mut headers = rt.written_headers.lock().await;
             if !headers.contains(&current_scope_id) {
                 if let Some(scope) = journal.get_scope(current_scope_id) {
                     let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
@@ -304,8 +330,8 @@ pub fn record(kind: EventKind, message: impl Into<String>) {
 /// runtime::init();
 /// runtime::info("Request processed successfully");
 /// ```
-pub fn info(message: impl Into<String>) {
-    record(EventKind::Info, message);
+pub async fn info(message: impl Into<String>) {
+    record(EventKind::Info, message).await;
 }
 
 /// Record a warning event.
@@ -318,8 +344,8 @@ pub fn info(message: impl Into<String>) {
 /// runtime::init();
 /// runtime::warn("Cache size approaching limit");
 /// ```
-pub fn warn(message: impl Into<String>) {
-    record(EventKind::Warning, message);
+pub async fn warn(message: impl Into<String>) {
+    record(EventKind::Warning, message).await;
 }
 
 /// Record an error event.
@@ -335,8 +361,8 @@ pub fn warn(message: impl Into<String>) {
 /// runtime::init();
 /// runtime::error("Failed to connect to database");
 /// ```
-pub fn error(message: impl Into<String>) {
-    record(EventKind::Error, message);
+pub async fn error(message: impl Into<String>) {
+    record(EventKind::Error, message).await;
 }
 
 /// Record a debug event.
@@ -349,8 +375,8 @@ pub fn error(message: impl Into<String>) {
 /// runtime::init();
 /// runtime::debug("Cache hit for key: user_123");
 /// ```
-pub fn debug(message: impl Into<String>) {
-    record(EventKind::Debug, message);
+pub async fn debug(message: impl Into<String>) {
+    record(EventKind::Debug, message).await;
 }
 
 /// Execute a closure within a new scope.
@@ -371,19 +397,19 @@ pub fn debug(message: impl Into<String>) {
 /// # Note
 ///
 /// If a panic occurs, the journal mutex is safely unpoisoned to allow further logging.
-pub fn scoped<S, F, R>(name: Option<S>, f: F) -> R
+pub async fn scoped<S, F, R>(name: Option<S>, f: F) -> R
 where
     S: Into<String>,
     F: FnOnce() -> R,
 {
-    let runtime_guard = RUNTIME.read().unwrap();
+    let runtime_guard = RUNTIME.read().await;
     let rt = runtime_guard
         .as_ref()
         .expect("eventline runtime not initialized - call runtime::init() first");
 
     // Enter scope in the journal
     let scope_id = {
-        let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+        let mut journal = rt.journal.lock().await;
         let parent = CURRENT_SCOPE.with(|s| s.get());
         journal.enter_scope(parent, name)
     };
@@ -402,7 +428,7 @@ where
     CURRENT_SCOPE.with(|s| s.set(prev_scope));
 
     // Exit scope with appropriate outcome
-    let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+    let mut journal = rt.journal.lock().await;
     match result {
         Ok(value) => {
             journal.exit_scope(scope_id, Outcome::Success);
@@ -414,7 +440,6 @@ where
         }
     }
 }
-
 /// Async version of `scoped`.
 ///
 /// Wraps the async closure in a scope, marking success/aborted automatically.
@@ -424,41 +449,37 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = R>,
 {
-    let runtime_guard = RUNTIME.read().unwrap();
-    let rt = runtime_guard
-        .as_ref()
-        .expect("eventline runtime not initialized - call runtime::init() first");
-
-    // Enter scope
+    let rt = get_runtime().await; // Arc<Runtime> clone
     let scope_id = {
-        let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+        let mut journal = rt.journal.lock().await;
         let parent = CURRENT_SCOPE.with(|s| s.get());
         journal.enter_scope(parent, name)
     };
 
-    // Save previous scope and set new
+    // Set thread-local scope
     let prev_scope = CURRENT_SCOPE.with(|s| {
         let old = s.get();
         s.set(Some(scope_id));
         old
     });
 
-    // Run the async closure and catch panics
     let result = std::panic::AssertUnwindSafe(f()).catch_unwind().await;
 
     // Restore previous scope
     CURRENT_SCOPE.with(|s| s.set(prev_scope));
 
-    // Exit scope with proper outcome
-    let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
-    match result {
-        Ok(value) => {
-            journal.exit_scope(scope_id, Outcome::Success);
-            value
-        }
-        Err(panic) => {
-            journal.exit_scope(scope_id, Outcome::Aborted);
-            std::panic::resume_unwind(panic);
+    // Exit scope
+    {
+        let mut journal = rt.journal.lock().await;
+        match result {
+            Ok(value) => {
+                journal.exit_scope(scope_id, Outcome::Success);
+                value
+            }
+            Err(panic) => {
+                journal.exit_scope(scope_id, Outcome::Aborted);
+                std::panic::resume_unwind(panic);
+            }
         }
     }
 }
@@ -472,12 +493,12 @@ where
 /// # Note
 ///
 /// If a panic occurs, the journal mutex is safely unpoisoned to allow further logging.
-pub fn try_scoped<S, F, R>(name: Option<S>, f: F) -> R
+pub async fn try_scoped<S, F, R>(name: Option<S>, f: F) -> R
 where
     S: Into<String>,
     F: FnOnce() -> R,
 {
-    let runtime_guard = RUNTIME.read().unwrap();
+    let runtime_guard = RUNTIME.read().await;
     
     // If runtime not initialized, just run the closure
     let Some(rt) = runtime_guard.as_ref() else {
@@ -486,7 +507,7 @@ where
 
     // Enter scope in the journal
     let scope_id = {
-        let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+        let mut journal = rt.journal.lock().await;
         let parent = CURRENT_SCOPE.with(|s| s.get());
         journal.enter_scope(parent, name)
     };
@@ -505,7 +526,7 @@ where
     CURRENT_SCOPE.with(|s| s.set(prev_scope));
 
     // Exit scope with appropriate outcome
-    let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+    let mut journal = rt.journal.lock().await;
     match result {
         Ok(value) => {
             journal.exit_scope(scope_id, Outcome::Success);
@@ -538,11 +559,11 @@ where
 ///     runtime::info("Anonymous task");
 /// });
 /// ```
-pub fn scoped_unnamed<F, R>(f: F) -> R
+pub async fn scoped_unnamed<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    scoped::<String, _, _>(None, f)
+    scoped::<String, _, _>(None, f).await
 }
 
 /// Execute a closure within a new unnamed scope, without panicking if runtime is uninitialized.
@@ -560,11 +581,11 @@ where
 /// });
 /// assert_eq!(result, 42);
 /// ```
-pub fn try_scoped_unnamed<F, R>(f: F) -> R
+pub async fn try_scoped_unnamed<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    try_scoped::<String, _, _>(None, f)
+    try_scoped::<String, _, _>(None, f).await
 }
 
 /// Get the current scope for this thread.
@@ -610,15 +631,17 @@ pub fn current_scope() -> Option<ScopeId> {
 ///     journal.write_to_file("eventline.log").unwrap();
 /// });
 /// ```
-pub fn with_journal<F, R>(f: F) -> Option<R>
+pub async fn with_journal<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&Journal) -> R,
 {
-    let runtime_guard = RUNTIME.read().unwrap();
-    runtime_guard.as_ref().map(|rt| {
-        let journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
-        f(&*journal)
-    })
+    let runtime_guard = RUNTIME.read().await;
+    if let Some(rt) = runtime_guard.as_ref() {
+        let journal = rt.journal.lock().await;
+        Some(f(&*journal))
+    } else {
+        None
+    }
 }
 
 /// Access the journal with a mutable closure.
@@ -642,15 +665,17 @@ where
 ///     journal.flush_buffer(buffer);
 /// });
 /// ```
-pub fn with_journal_mut<F, R>(f: F) -> Option<R>
+pub async fn with_journal_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Journal) -> R,
 {
-    let runtime_guard = RUNTIME.read().unwrap();
-    runtime_guard.as_ref().map(|rt| {
-        let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
-        f(&mut *journal)
-    })
+    let runtime_guard = RUNTIME.read().await;
+    if let Some(rt) = runtime_guard.as_ref() {
+        let mut journal = rt.journal.lock().await;
+        Some(f(&mut *journal))
+    } else {
+        None
+    }
 }
 
 /// Enable live logging to the given file path.

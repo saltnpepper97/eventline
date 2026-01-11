@@ -19,7 +19,8 @@ Eventline records *what happened*, *when it happened*, and *in what causal conte
 - **Human-readable output** — Unicode bullets, optional color coding
 - **High-throughput batching** — `JournalBuffer` for batch writes
 - **Dual-layer API** — pure core + optional runtime facade
-- **Deterministic replay** — safe concurrent reads, reliable audit trails
+- **Async runtime support** — fire-and-forget logging and async scopes (`scoped_async()`)
+- **Deterministic replay** — safe concurrent reads, reliable audit trailsa
 
 ---
 
@@ -60,6 +61,31 @@ fn main() {
     });
 
     // Journal is now live-appended automatically; no manual flush required
+}
+```
+
+### Runtime API (Async)
+
+```rust
+use eventline::runtime;
+use eventline::event_info;
+
+#[tokio::main]
+async fn main() {
+    // Initialize runtime
+    runtime::init().await;
+
+    // Enable console output
+    runtime::enable_console_output(true);
+    runtime::enable_console_color(true);
+
+    // Fire-and-forget logging
+    runtime::info("Async logging example").await;
+
+    // Scoped async task
+    runtime::scoped_async(Some("AsyncTask"), || async {
+        runtime::info("Inside async scope").await;
+    }).await;
 }
 ```
 
@@ -401,26 +427,25 @@ fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.2.13"
+eventline = "0.3.0"
 ```
 
 Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.2.13", features = ["colour"] }
+eventline = { version = "0.3.0", features = ["colour"] }
 ```
 
 ---
 
 ## Roadmap
 
-- [ ] Custom formatters (JSON, binary)
-- [ ] Structured data (key-value pairs)
-- [ ] Zero-copy query interface
-- [ ] Tag-based filtering
-- [ ] Async runtime support
-- [ ] systemd journal integration
+- Custom formatters (JSON, binary)
+- Structured data (key-value pairs)
+- Zero-copy query interface
+- Tag-based filtering
+- systemd journal integration
 
 ---
 
@@ -442,13 +467,15 @@ Focuses on local, human-readable execution traces with optional runtime log filt
 
 ---
 
-## Version 0.2.13 — Highlights
+## Version 0.3.0 — Highlights
 
+- **Async runtime support** — `init_async()`, `scoped_async()`, fire-and-forget logging from async tasks
 - Live logging — automatic timestamped file append
-- Proper runtime output format — indentation by scope depth, bullets, colors
-- Removed unnecessary manual flush — runtime now manages output automatically
+- Runtime output formatting — indentation by scope depth, bullets, colors
+- Dual output mode — console + journal, fully async-safe
+- Removed unnecessary manual flush — runtime manages output automatically
 - Improved CLI integration — verbose, quiet, color flags respected
-- Internal cleanup — simpler, safer, and more maintainable runtime code
+- Internal cleanup — simpler, safer, maintainable runtime code
 
 ---
 
