@@ -2,7 +2,8 @@
 //!
 //! These macros provide a clean, zero-overhead interface to the runtime.
 //! They only allocate if the runtime is initialized and match Rust's
-//! standard logging conventions.
+//! standard logging conventions. Each macro respects the runtime's
+//! log level setting, so you can globally control which events are recorded.
 //!
 //! # Example
 //!
@@ -27,7 +28,7 @@
 
 /// Record an informational event.
 ///
-/// Accepts format string syntax like `println!`.
+/// Accepts format string syntax like `println!`. Respects runtime log level.
 ///
 /// # Example
 ///
@@ -50,7 +51,7 @@ macro_rules! event_info {
 /// Record a warning event.
 ///
 /// Warnings indicate something unexpected or suboptimal happened,
-/// but execution can continue.
+/// but execution can continue. Respects runtime log level.
 ///
 /// # Example
 ///
@@ -72,9 +73,7 @@ macro_rules! event_warn {
 
 /// Record an error event.
 ///
-/// Errors indicate something went wrong. Note that this does **not**
-/// automatically fail the current scope - scope outcomes must be set
-/// explicitly.
+/// Errors indicate something went wrong. Does **not** fail the current scope automatically.
 ///
 /// # Example
 ///
@@ -120,13 +119,8 @@ macro_rules! event_debug {
 
 /// Execute code within a named scope.
 ///
-/// The scope is automatically entered and exited. Events recorded within
-/// the block are associated with this scope.
-///
-/// # Panics
-///
-/// Panics if the runtime is not initialized. For a non-panicking variant,
-/// use [`try_scope!`].
+/// Automatically enters/exits the scope, records events, and restores previous scope.
+/// Panics if runtime not initialized. Use [`try_scope!`] to avoid panicking.
 ///
 /// # Example
 ///
@@ -142,26 +136,6 @@ macro_rules! event_debug {
 /// });
 /// # runtime::reset();
 /// ```
-///
-/// # Nested Scopes
-///
-/// ```rust
-/// # #[doc(hidden)] use eventline::{event_scope, event_info};
-/// # use eventline::runtime;
-/// # runtime::init();
-/// event_scope!("RequestHandler", {
-///     event_info!("Request received");
-///     
-///     event_scope!("Authentication", {
-///         event_info!("Validating credentials");
-///     });
-///     
-///     event_scope!("Processing", {
-///         event_info!("Processing request");
-///     });
-/// });
-/// # runtime::reset();
-/// ```
 #[macro_export]
 macro_rules! event_scope {
     ($name:expr, $body:block) => {
@@ -170,9 +144,6 @@ macro_rules! event_scope {
 }
 
 /// Execute code within a named scope, without panicking if runtime is uninitialized.
-///
-/// This is a non-panicking variant of [`event_scope!`]. If the runtime is not
-/// initialized, the code block executes normally without logging.
 ///
 /// # Example
 ///
@@ -193,12 +164,7 @@ macro_rules! try_scope {
 
 /// Execute code within an unnamed scope.
 ///
-/// Useful when you want scope structure without naming overhead.
-///
-/// # Panics
-///
-/// Panics if the runtime is not initialized. For a non-panicking variant,
-/// use [`try_scope_unnamed!`].
+/// Useful for scope structure without naming overhead. Panics if runtime not initialized.
 ///
 /// # Example
 ///
@@ -220,8 +186,6 @@ macro_rules! event_scope_unnamed {
 
 /// Execute code within an unnamed scope, without panicking if runtime is uninitialized.
 ///
-/// This is a non-panicking variant of [`event_scope_unnamed!`].
-///
 /// # Example
 ///
 /// ```rust
@@ -242,17 +206,17 @@ macro_rules! try_scope_unnamed {
 #[cfg(test)]
 mod tests {
     use crate::runtime;
-
-    /// Safe reset helper to avoid poisoned mutex issues
+    use crate::runtime::log_level::{set_log_level, LogLevel};
+  
     fn safe_reset() {
         let _ = std::panic::catch_unwind(|| runtime::reset());
         runtime::init();
+        set_log_level(LogLevel::Debug); // ensure debug events are recorded
     }
 
     #[test]
     fn test_event_macros() {
         safe_reset();
-
         event_info!("test");
         event_warn!("test {}", 42);
         event_error!("test");
@@ -268,10 +232,7 @@ mod tests {
     #[test]
     fn test_scope_macro() {
         safe_reset();
-
-        event_scope!("test_scope", {
-            event_info!("inside");
-        });
+        event_scope!("test_scope", { event_info!("inside"); });
 
         runtime::with_journal(|journal| {
             assert_eq!(journal.scopes().len(), 1);
@@ -284,10 +245,7 @@ mod tests {
     #[test]
     fn test_unnamed_scope_macro() {
         safe_reset();
-
-        event_scope_unnamed!({
-            event_info!("inside");
-        });
+        event_scope_unnamed!({ event_info!("inside"); });
 
         runtime::with_journal(|journal| {
             assert_eq!(journal.scopes().len(), 1);
@@ -300,9 +258,7 @@ mod tests {
     #[test]
     fn test_try_scope_macro_without_init() {
         runtime::reset();
-
         let result = try_scope!("test", { 42 });
-
         assert_eq!(result, 42);
         runtime::reset();
     }
@@ -310,10 +266,7 @@ mod tests {
     #[test]
     fn test_try_scope_macro_with_init() {
         safe_reset();
-
-        try_scope!("test", {
-            event_info!("inside");
-        });
+        try_scope!("test", { event_info!("inside"); });
 
         runtime::with_journal(|journal| {
             assert_eq!(journal.scopes().len(), 1);
@@ -326,9 +279,7 @@ mod tests {
     #[test]
     fn test_try_scope_unnamed_macro() {
         runtime::reset();
-
         let result = try_scope_unnamed!({ 42 });
-
         assert_eq!(result, 42);
         runtime::reset();
     }

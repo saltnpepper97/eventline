@@ -49,6 +49,7 @@
 //! });
 //! ```
 
+pub mod log_level;
 pub mod macros;
 pub mod tests;
 
@@ -159,6 +160,11 @@ pub fn is_initialized() -> bool {
 /// runtime::record(EventKind::Warning, format!("Port {} unavailable", 8080));
 /// ```
 pub fn record(kind: EventKind, message: impl Into<String>) {
+    // Skip events below current log level
+    if !log_level::log_enabled(kind) {
+        return;
+    }
+
     let runtime_guard = RUNTIME.read().unwrap();
     if let Some(rt) = &*runtime_guard {
         let scope = CURRENT_SCOPE.with(|s| s.get());
