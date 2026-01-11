@@ -21,7 +21,7 @@ impl<'a> ScopeGuard<'a> {
     /// # Example
     /// ```
     /// use eventline::journal::Journal;
-    /// use eventline::scope_guard::ScopeGuard;
+    /// use eventline::scope::ScopeGuard; // <--- fixed path
     /// use eventline::outcome::Outcome;
     /// 
     /// let mut journal = Journal::new();

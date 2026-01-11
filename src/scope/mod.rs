@@ -4,6 +4,10 @@
 //! lifetime and outcomes. Each scope has a unique `ScopeId` and may
 //! be nested under a parent scope.
 
+pub mod scope_guard;
+
+pub use scope_guard::ScopeGuard;
+
 use crate::id::ScopeId;
 
 /// A journal scope, representing a logical unit of work.
