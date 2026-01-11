@@ -1,6 +1,6 @@
 [package]
 name = "eventline"
-version = "0.2.11"
+version = "0.2.12"
 edition = "2024"
 authors = ["Dustin Pilgrim <dustin.pilgrim1997@gmail.com>"]
 description = "A structured event journaling library with scoped timelines, outcomes, and serialization support."
@@ -14,7 +14,7 @@ rust-version = "1.90"
 
 [features]
 default = []
-color = []
+colour = []
 
 [dependencies]
 chrono = "0.4.42"

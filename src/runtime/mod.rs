@@ -54,10 +54,12 @@
 //! ```
 
 pub mod console;
+pub mod live_log;
 pub mod log_level;
 pub mod macros;
 pub mod tests;
 
+use live_log::append as live_append;
 use std::sync::{Mutex, RwLock};
 
 use crate::event_kind::EventKind;
@@ -205,42 +207,54 @@ pub fn is_console_color_enabled() -> bool {
 
 /// Record an event with the specified kind and message.
 ///
-/// The event is associated with the current thread's active scope, if any.
-/// If console output is enabled, the event is also printed immediately.
+/// This is the central fire-and-forget logging function. It does the following:
+/// 1. Checks the current log level; skips if the event kind is below the threshold.
+/// 2. Records the event in the journal (thread-safe, recovers poisoned mutexes).
+/// 3. Prints the event to the console if console output is enabled.
+/// 4. Appends the event to the live log file if live logging is enabled.
 ///
-/// If the runtime is not initialized, this is a no-op.
+/// The event is automatically associated with the current thread's active scope, if any.
 ///
-/// Handles poisoned mutexes safely.
+/// # Examples
+///
+/// ```
+/// use eventline::runtime;
+/// use eventline::EventKind;
+///
+/// runtime::init();
+/// runtime::enable_console_output(true);
+///
+/// runtime::record(EventKind::Info, "Application started");
+/// ```
 pub fn record(kind: EventKind, message: impl Into<String>) {
-    // Skip events below current log level
     if !log_level::log_enabled(kind) {
         return;
     }
 
     let message = message.into();
 
-    // Record in journal
-    let runtime_guard = RUNTIME.read().unwrap();
-    if let Some(rt) = &*runtime_guard {
+    // Journal
+    if let Some(rt) = RUNTIME.read().unwrap().as_ref() {
         let scope = CURRENT_SCOPE.with(|s| s.get());
 
-        // SAFELY lock the journal, even if it was poisoned
         let mut journal = match rt.journal.lock() {
             Ok(j) => j,
-            Err(poisoned) => {
-                eprintln!("Warning: journal mutex was poisoned, recovering");
-                poisoned.into_inner()
-            }
+            Err(poisoned) => poisoned.into_inner(),
         };
 
-        // Record the event
         journal.record_with_kind(scope, kind, &message);
     }
 
-    // Print to console if enabled
+    // Console
     if console::is_console_enabled() {
-        console::print_event(kind, &message);
+        let _ = std::panic::catch_unwind(|| console::print_event(kind, &message));
     }
+
+    // Live log
+    let _ = std::panic::catch_unwind(|| {
+        let line = format!("[{:?}] {}", kind, message);
+        live_append(&line);
+    });
 }
 
 /// Record an informational event.
@@ -524,7 +538,6 @@ where
     })
 }
 
-
 /// Access the journal with a mutable closure.
 ///
 /// This provides full mutable access to the underlying journal.
@@ -555,4 +568,10 @@ where
         let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
         f(&mut *journal)
     })
+}
+
+/// Enable live logging to the given file path.
+/// This will create directories if they don't exist.
+pub fn enable_live_logging(path: impl Into<std::path::PathBuf>) {
+    live_log::enable(path.into());
 }

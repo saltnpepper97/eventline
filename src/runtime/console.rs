@@ -76,7 +76,7 @@ pub fn is_console_color_enabled() -> bool {
 /// 1. The `color` feature is enabled at compile time, AND
 /// 2. Color is enabled at runtime via `enable_console_color(true)`
 pub fn print_event(kind: EventKind, message: &str) {
-    #[cfg(feature = "color")]
+    #[cfg(feature = "colour")]
     {
         if is_console_color_enabled() {
             print_event_colored(kind, message);
@@ -96,7 +96,7 @@ pub fn print_event(kind: EventKind, message: &str) {
 /// Print an event with ANSI color codes.
 ///
 /// Internal function - automatically called by `print_event` when color is enabled.
-#[cfg(feature = "color")]
+#[cfg(feature = "colour")]
 fn print_event_colored(kind: EventKind, message: &str) {
     use crate::colour::{RESET, RED, YELLOW, BLUE};
     

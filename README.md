@@ -380,14 +380,14 @@ fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.2.11"
+eventline = "0.2.12"
 ```
 
 Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.2.11", features = ["color"] }
+eventline = { version = "0.2.12", features = ["colour"] }
 ```
 
 ---
