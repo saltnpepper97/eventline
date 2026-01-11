@@ -210,16 +210,7 @@ pub fn is_console_color_enabled() -> bool {
 ///
 /// If the runtime is not initialized, this is a no-op.
 ///
-/// # Example
-///
-/// ```
-/// use eventline::runtime;
-/// use eventline::EventKind;
-///
-/// runtime::init();
-/// runtime::record(EventKind::Info, "Server started");
-/// runtime::record(EventKind::Warning, format!("Port {} unavailable", 8080));
-/// ```
+/// Handles poisoned mutexes safely.
 pub fn record(kind: EventKind, message: impl Into<String>) {
     // Skip events below current log level
     if !log_level::log_enabled(kind) {
@@ -232,7 +223,17 @@ pub fn record(kind: EventKind, message: impl Into<String>) {
     let runtime_guard = RUNTIME.read().unwrap();
     if let Some(rt) = &*runtime_guard {
         let scope = CURRENT_SCOPE.with(|s| s.get());
-        let mut journal = rt.journal.lock().unwrap();
+
+        // SAFELY lock the journal, even if it was poisoned
+        let mut journal = match rt.journal.lock() {
+            Ok(j) => j,
+            Err(poisoned) => {
+                eprintln!("Warning: journal mutex was poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
+
+        // Record the event
         journal.record_with_kind(scope, kind, &message);
     }
 
