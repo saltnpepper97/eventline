@@ -11,7 +11,9 @@ Eventline records *what happened*, *when it happened*, and *in what causal conte
 - **Append-only journal** — never mutates or removes records
 - **Scoped execution** — track outcomes and durations
 - **Event kinds** — Info, Warning, Error, Debug (separate from outcomes)
-- Runtime log levels — filter events globally (Debug, Info, Warning, Error)
+- **Runtime log levels** — filter events globally (Debug, Info, Warning, Error)
+- **Dual output mode** — journal + optional real-time console printing
+- **Unified color control** — consistent ANSI colors across console and renderer
 - **Flexible filtering** — by outcome, depth, duration, event kind, message content
 - **Human-readable output** — Unicode bullets, optional color coding
 - **High-throughput batching** — `JournalBuffer` for batch writes
@@ -34,19 +36,24 @@ use eventline::{event_info, event_warn, event_error, event_debug};
 fn main() {
     runtime::init();
     
+    // Enable dual output: journal + console
+    runtime::enable_console_output(true);
+    runtime::enable_console_color(true);  // Optional ANSI colors
+    
     // Only record warnings and errors
     set_log_level(LogLevel::Warning);
 
     event_info!("This will NOT be logged");
-    event_warn!("Cache approaching limit");
-    event_error!("Database connection failed");
-    event_debug!("Verbose debug info"); // filtered out
+    event_warn!("Cache approaching limit");          // Journaled + printed in yellow
+    event_error!("Database connection failed");      // Journaled + printed in red
+    event_debug!("Verbose debug info");              // Filtered out
        
     event_scope!("RequestHandler", {
-        event_info!("Processing request"); // filtered out
-        event_warn!("Retry attempt failed"); // recorded
+        event_info!("Processing request");           // Filtered out
+        event_warn!("Retry attempt failed");         // Journaled + printed
     });
     
+    // Save journal for later analysis
     runtime::with_journal(|journal| {
         journal.write_to_file("events.log").unwrap();
     });
@@ -68,8 +75,8 @@ journal.scoped(None, Some("Task"), |journal, scope| {
 });
 
 journal.write_to_file("events.log").unwrap();
-
 ```
+
 ---
 
 ## Architecture
@@ -83,21 +90,59 @@ journal.write_to_file("events.log").unwrap();
 │   Runtime   │  Global, thread-safe facade (optional)
 └──────┬──────┘
        ↓
-┌─────────────┐
-│   Journal   │  Pure, append-only core (always available)
-└─────────────┘
+┌─────────────┐  ┌─────────────┐
+│   Journal   │  │   Console   │
+└─────────────┘  └─────────────┘
 ```
 
 **Core Layer** (always available):
 - **Journal** — Pure data structure
 - **Scope** — Logical units of work
-- **Record**  — Individual events
+- **Record** — Individual events
 - **Filter** — Composable criteria
 
 **Runtime Layer** (optional):
 - **runtime** — Global facade
+- **console** — Dual output control
 - **Macros** — Zero-overhead convenience
-- **Log levels** — filter events at runtime
+- **Log levels** — Runtime event filtering
+
+---
+
+## Dual Output Mode
+
+Eventline supports two output modes:
+
+### Silent Journaling (Default)
+Events are recorded but not printed:
+```rust
+runtime::init();
+runtime::enable_console_output(false); // Default
+
+event_info!("Silent"); // Recorded, not printed
+
+// Later, examine the journal
+runtime::with_journal(|journal| {
+    eventline::renderer::render_journal_tree(journal, true, None);
+});
+```
+
+### Dual Output (Traditional Logging Feel)
+Events are both journaled AND printed to console:
+```rust
+runtime::init();
+runtime::enable_console_output(true);
+runtime::enable_console_color(true);
+
+event_info!("Starting");  // Journaled + printed
+event_warn!("Warning");   // Journaled + printed in yellow
+event_error!("Error");    // Journaled + printed to stderr in red
+```
+
+**Benefits:**
+- Get traditional logging behavior when you want it
+- Always have structured journal for post-mortem
+- Single flag to toggle: `enable_console_output(bool)`
 
 ---
 
@@ -143,7 +188,7 @@ let filter = Filter::scope(
         .and(ScopeFilter::MinDepth(2))
 );
 
-render_journal_tree(&journal, &filter);
+render_journal_tree(&journal, true, Some(&filter));
 ```
 
 Benefits:
@@ -151,6 +196,61 @@ Benefits:
 - Complete journal always preserved
 - Multiple views from same data
 - Composable with AND, OR, NOT
+
+---
+
+## CLI Integration
+
+Typical pattern for command-line tools:
+
+```rust
+use clap::Parser;
+
+#[derive(Parser)]
+struct Args {
+    /// Enable verbose output
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Suppress console output
+    #[arg(short, long)]
+    quiet: bool,
+    
+    /// Disable colored output
+    #[arg(long)]
+    no_color: bool,
+}
+
+fn main() {
+    let args = Args::parse();
+    
+    runtime::init();
+
+    if args.quiet {
+        runtime::enable_console_output(false);
+        set_log_level(LogLevel::Warning);
+    } else {
+        runtime::enable_console_output(true);
+        runtime::enable_console_color(!args.no_color);
+        
+        if args.verbose {
+            set_log_level(LogLevel::Debug);
+        } else {
+            set_log_level(LogLevel::Info);
+        }
+    }
+
+    event_info!("Application started");
+    
+    // Your application logic here
+    
+    // At exit, optionally render summary with same color setting
+    runtime::with_journal(|journal| {
+        let use_color = !args.no_color;
+        eventline::renderer::render_summary(journal, use_color, None);
+    });
+}
+```
 
 ---
 
@@ -208,6 +308,34 @@ runtime::scoped(Some("Deployment"), || {
 });
 ```
 
+### Environment Variable Support
+
+Respect common conventions:
+
+```rust
+fn main() {
+    runtime::init();
+    
+    // Respect NO_COLOR
+    let use_color = std::env::var("NO_COLOR").is_err();
+    runtime::enable_console_color(use_color);
+    
+    // Optional: RUST_LOG compatibility
+    let log_level = std::env::var("RUST_LOG")
+        .map(|s| match s.to_lowercase().as_str() {
+            "debug" => LogLevel::Debug,
+            "info" => LogLevel::Info,
+            "warn" => LogLevel::Warning,
+            "error" => LogLevel::Error,
+            _ => LogLevel::Info,
+        })
+        .unwrap_or(LogLevel::Info);
+    
+    set_log_level(log_level);
+    runtime::enable_console_output(true);
+}
+```
+
 ---
 
 ## Design Principles
@@ -226,13 +354,15 @@ Once written, entries are **never modified or removed**:
 - **JournalBuffer** — Batching mechanism
 - **Filter** — Selection criteria
 - **Runtime** — Optional global facade
+- **Console** — Dual output control
 
 ### Test-Friendly
 
 ```rust
 #[test]
 fn test_task() {
-    runtime::init(); // Fresh state
+    runtime::init();
+    runtime::enable_console_output(false); // Quiet in tests
     
     event_info!("test");
     
@@ -250,7 +380,14 @@ fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.2.0"
+eventline = "0.2.1"
+```
+
+Optional features:
+
+```toml
+[dependencies]
+eventline = { version = "0.2.1", features = ["color"] }
 ```
 
 ---
@@ -262,6 +399,7 @@ eventline = "0.2.0"
 - [ ] Zero-copy query interface
 - [ ] Tag-based filtering
 - [ ] Async runtime support
+- [ ] systemd journal integration
 
 ---
 
@@ -270,6 +408,7 @@ eventline = "0.2.0"
 Eventline is designed to:
 - Be **intuitive for humans** reading logs
 - Enable **deterministic replay** of execution
+- Support both **traditional logging** and **structured journaling**
 - Serve as **foundation for distribution-wide logging**
 - Make debugging and monitoring **pleasant**
 
@@ -278,7 +417,17 @@ It is **not**:
 - A distributed tracing backend
 - A replacement for structured logging (yet)
 
-Focuses on local, human-readable execution traces with optional runtime log filtering.
+Focuses on local, human-readable execution traces with optional runtime log filtering and dual output modes.
+
+---
+
+## What's New in 0.2.1
+
+- **Dual output mode** — Optional real-time console printing alongside journaling
+- **Unified color control** — Consistent ANSI colors across console and renderer
+- **Runtime color toggle** — `enable_console_color(bool)` for dynamic control
+- **Better CLI integration** — Standard patterns for `--verbose`, `--quiet`, `--no-color`
+- **NO_COLOR support** — Respects environment variable conventions
 
 ---
 

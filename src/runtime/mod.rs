@@ -6,6 +6,7 @@
 //! - Automatic scope tracking per thread
 //! - No &mut Journal required at call sites
 //! - Safe concurrent access via internal synchronization
+//! - Optional dual output: journal + immediate console printing
 //!
 //! The runtime is optional - [`Journal`] remains usable standalone.
 //!
@@ -20,9 +21,9 @@
 //! │  Runtime   │  (global, thread-safe)
 //! └─────┬──────┘
 //!       ↓
-//! ┌────────────┐
-//! │  Journal   │  (pure, append-only)
-//! └────────────┘
+//! ┌────────────┐  ┌─────────────┐
+//! │  Journal   │  │  Console    │
+//! └────────────┘  └─────────────┘
 //! ```
 //!
 //! # Example
@@ -34,7 +35,10 @@
 //! // Initialize once at startup
 //! runtime::init();
 //!
-//! // Record events from anywhere
+//! // Enable dual output (optional)
+//! runtime::enable_console_output(true);
+//!
+//! // Record events - they'll be both journaled and printed
 //! runtime::record(EventKind::Info, "Application started");
 //!
 //! // Create scoped contexts
@@ -49,6 +53,7 @@
 //! });
 //! ```
 
+pub mod console;
 pub mod log_level;
 pub mod macros;
 pub mod tests;
@@ -143,9 +148,65 @@ pub fn is_initialized() -> bool {
     RUNTIME.read().unwrap().is_some()
 }
 
+/// Enable or disable automatic console output for events.
+///
+/// When enabled, events are printed to the console immediately as they're recorded,
+/// in addition to being stored in the journal. This provides "dual output" mode.
+///
+/// # Example
+///
+/// ```
+/// use eventline::runtime;
+///
+/// runtime::init();
+/// runtime::enable_console_output(true); // Enable real-time console output
+///
+/// // This will both record in journal AND print to console
+/// runtime::info("Server started on port 8080");
+/// ```
+pub fn enable_console_output(enable: bool) {
+    console::enable_console_output(enable);
+}
+
+/// Check if console output is currently enabled.
+pub fn is_console_enabled() -> bool {
+    console::is_console_enabled()
+}
+
+/// Enable or disable color output for console events.
+///
+/// This controls whether ANSI color codes are used when printing events to the console.
+/// This only has effect if:
+/// 1. The `color` feature is enabled at compile time, AND
+/// 2. Console output is enabled via `enable_console_output(true)`
+///
+/// Without the `color` feature, output is always plain regardless of this setting.
+///
+/// # Example
+///
+/// ```
+/// use eventline::runtime;
+///
+/// runtime::init();
+/// runtime::enable_console_output(true);
+/// runtime::enable_console_color(true); // Enable colored output
+///
+/// runtime::error("This will be red");
+/// runtime::warn("This will be yellow");
+/// ```
+pub fn enable_console_color(enable: bool) {
+    console::enable_console_color(enable);
+}
+
+/// Check if console color is currently enabled.
+pub fn is_console_color_enabled() -> bool {
+    console::is_console_color_enabled()
+}
+
 /// Record an event with the specified kind and message.
 ///
 /// The event is associated with the current thread's active scope, if any.
+/// If console output is enabled, the event is also printed immediately.
 ///
 /// If the runtime is not initialized, this is a no-op.
 ///
@@ -165,11 +226,19 @@ pub fn record(kind: EventKind, message: impl Into<String>) {
         return;
     }
 
+    let message = message.into();
+
+    // Record in journal
     let runtime_guard = RUNTIME.read().unwrap();
     if let Some(rt) = &*runtime_guard {
         let scope = CURRENT_SCOPE.with(|s| s.get());
         let mut journal = rt.journal.lock().unwrap();
-        journal.record_with_kind(scope, kind, message);
+        journal.record_with_kind(scope, kind, &message);
+    }
+
+    // Print to console if enabled
+    if console::is_console_enabled() {
+        console::print_event(kind, &message);
     }
 }
 
