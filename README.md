@@ -250,7 +250,7 @@ fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.1.1"
+eventline = "0.2.0"
 ```
 
 ---
