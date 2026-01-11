@@ -17,3 +17,14 @@ pub enum EventKind {
     /// Low-level diagnostic information.
     Debug,
 }
+
+impl EventKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EventKind::Info => "INFO",
+            EventKind::Warning => "WARN",
+            EventKind::Error => "ERROR",
+            EventKind::Debug => "DEBUG",
+        }
+    }
+}

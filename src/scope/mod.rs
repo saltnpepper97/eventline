@@ -21,4 +21,13 @@ pub struct Scope {
     pub entered_at: u64,
     /// Optional human-readable name for the scope.
     pub name: Option<String>,
+    /// Timestamp when the scope was exited
+    pub exited_at: Option<u64>,
+}
+
+impl Scope {
+    pub fn elapsed(&self) -> std::time::Duration {
+        let end = self.exited_at.unwrap_or_else(|| crate::journal::utils::current_millis());
+        std::time::Duration::from_millis(end.saturating_sub(self.entered_at))
+    }
 }

@@ -13,6 +13,7 @@ Eventline records *what happened*, *when it happened*, and *in what causal conte
 - **Event kinds** — Info, Warning, Error, Debug (separate from outcomes)
 - **Runtime log levels** — filter events globally (Debug, Info, Warning, Error)
 - **Dual output mode** — journal + optional real-time console printing
+- **Live logging** — automatic, timestamped append to disk
 - **Unified color control** — consistent ANSI colors across console and renderer
 - **Flexible filtering** — by outcome, depth, duration, event kind, message content
 - **Human-readable output** — Unicode bullets, optional color coding
@@ -32,31 +33,33 @@ For applications and daemons:
 use eventline::runtime;
 use eventline::runtime::log_level::{set_log_level, LogLevel};
 use eventline::{event_info, event_warn, event_error, event_debug};
+use std::path::PathBuf;
 
 fn main() {
     runtime::init();
-    
+
     // Enable dual output: journal + console
     runtime::enable_console_output(true);
-    runtime::enable_console_color(true);  // Optional ANSI colors
-    
-    // Only record warnings and errors
+    runtime::enable_console_color(true);
+
+    // Enable live logging to disk
+    let log_path = PathBuf::from("/tmp/eventline.log");
+    runtime::enable_live_logging(log_path);
+
+    // Set runtime log level
     set_log_level(LogLevel::Warning);
 
     event_info!("This will NOT be logged");
-    event_warn!("Cache approaching limit");          // Journaled + printed in yellow
-    event_error!("Database connection failed");      // Journaled + printed in red
+    event_warn!("Cache approaching limit");          // Journaled + printed + live
+    event_error!("Database connection failed");      // Journaled + printed + live
     event_debug!("Verbose debug info");              // Filtered out
-       
+
     event_scope!("RequestHandler", {
         event_info!("Processing request");           // Filtered out
-        event_warn!("Retry attempt failed");         // Journaled + printed
+        event_warn!("Retry attempt failed");         // Journaled + printed + live
     });
-    
-    // Save journal for later analysis
-    runtime::with_journal(|journal| {
-        journal.write_to_file("events.log").unwrap();
-    });
+
+    // Journal is now live-appended automatically; no manual flush required
 }
 ```
 
@@ -90,9 +93,10 @@ journal.write_to_file("events.log").unwrap();
 │   Runtime   │  Global, thread-safe facade (optional)
 └──────┬──────┘
        ↓
-┌─────────────┐  ┌─────────────┐
-│   Journal   │  │   Console   │
-└─────────────┘  └─────────────┘
+┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+│   Journal   │  │   Console   │  │ LiveLogFile │
+└─────────────┘  └─────────────┘  └─────────────┘
+
 ```
 
 **Core Layer** (always available):
@@ -104,8 +108,25 @@ journal.write_to_file("events.log").unwrap();
 **Runtime Layer** (optional):
 - **runtime** — Global facade
 - **console** — Dual output control
+- live_log — Automatic, timestamped disk logging
 - **Macros** — Zero-overhead convenience
 - **Log levels** — Runtime event filtering
+
+---
+
+## Live Logging
+
+Live logging is **enabled per fiel path** using
+`runtime::enable_live_logging(PathBuf)`
+
+```rust
+use std::path::PathBuf;
+runtime::enable_live_logging(PathBuf::from("/tmp/eventline.log"));
+
+event_info!("This event will be written to the live log file automatically");
+event_warn!("Timestamped and indented according to scope depth");
+
+```
 
 ---
 
@@ -380,14 +401,14 @@ fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.2.12"
+eventline = "0.2.13"
 ```
 
 Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.2.12", features = ["colour"] }
+eventline = { version = "0.2.13", features = ["colour"] }
 ```
 
 ---
@@ -421,13 +442,13 @@ Focuses on local, human-readable execution traces with optional runtime log filt
 
 ---
 
-## What's New in 0.2.1
+## Version 0.2.13 — Highlights
 
-- **Dual output mode** — Optional real-time console printing alongside journaling
-- **Unified color control** — Consistent ANSI colors across console and renderer
-- **Runtime color toggle** — `enable_console_color(bool)` for dynamic control
-- **Better CLI integration** — Standard patterns for `--verbose`, `--quiet`, `--no-color`
-- **NO_COLOR support** — Respects environment variable conventions
+- Live logging — automatic timestamped file append
+- Proper runtime output format — indentation by scope depth, bullets, colors
+- Removed unnecessary manual flush — runtime now manages output automatically
+- Improved CLI integration — verbose, quiet, color flags respected
+- Internal cleanup — simpler, safer, and more maintainable runtime code
 
 ---
 

@@ -11,8 +11,6 @@
 //! are captured as [`Record`]s. Scopes allow nesting and provide context for
 //! each event. Outcomes for scopes are recorded via [`ScopeExit`](RecordKind::ScopeExit) records.
 
-use std::fs::OpenOptions;
-
 pub mod buffer;
 pub mod utils;
 pub mod writer;
@@ -220,6 +218,7 @@ impl Journal {
             parent,
             entered_at: current_millis(),
             name: name.map(|s| s.into()),
+            exited_at: None,
         });
 
         id
@@ -272,6 +271,80 @@ impl Journal {
         id
     }
 
+    /// Get the full scope path from root to the given scope.
+    ///
+    /// Example: ["Root", "DatabaseMigration"]
+    pub fn scope_path(&self, scope: Option<ScopeId>) -> Vec<String> {
+        let mut path = Vec::new();
+        let mut current = scope;
+        while let Some(id) = current {
+            if let Some(scope) = self.scopes.get(id.0 as usize) {
+                path.push(scope.name.clone().unwrap_or_else(|| "<unnamed>".to_string()));
+                current = scope.parent;
+            } else {
+                break;
+            }
+        }
+        path.reverse();
+        path
+    }
+
+    /// Returns the elapsed time of a scope in milliseconds.
+    ///
+    /// This measures the difference between when the scope was entered (`Scope.entered_at`)
+    /// and either the current time (if still active) or the recorded exit time (if exited).
+    ///
+    /// Returns `None` if the scope ID does not exist.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use eventline::journal::Journal;
+    /// let mut journal = Journal::new();
+    /// let scope = journal.enter_scope_unnamed(None);
+    /// assert!(journal.scope_elapsed(Some(scope)).is_some());
+    /// ```
+    pub fn scope_elapsed(&self, scope: Option<ScopeId>) -> Option<std::time::Duration> {
+        scope.and_then(|id| self.scopes.get(id.0 as usize).map(|s| s.elapsed()))
+    }
+
+    /// Returns the outcome of a scope (`Success`, `Aborted`, etc.) if it has exited.
+    ///
+    /// Returns `None` if the scope has not exited or the ID is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use eventline::journal::Journal;
+    /// use eventline::outcome::Outcome;
+    ///
+    /// let mut journal = Journal::new();
+    /// let scope = journal.enter_scope_unnamed(None);
+    /// journal.exit_scope(scope, Outcome::Success);
+    /// assert_eq!(journal.scope_outcome(Some(scope)), Some(Outcome::Success));
+    /// ```
+    pub fn scope_outcome(&self, scope: Option<ScopeId>) -> Option<Outcome> {
+        scope.and_then(|id| {
+            // Scan records in reverse for the scope exit record
+            self.records
+                .iter()
+                .rev()
+                .find_map(|r| match &r.kind {
+                    crate::record::RecordKind::ScopeExit { outcome, .. } if r.scope == Some(id) => {
+                        Some(*outcome)
+                    }
+                    _ => None,
+                })
+        })
+    }
+
+    /// Get a reference to a scope by `ScopeId`.
+    ///
+    /// Returns `Some(&Scope)` if the scope exists, `None` otherwise.
+    pub fn get_scope(&self, id: ScopeId) -> Option<&Scope> {
+        self.scopes.get(id.0 as usize)
+    }
+
     /// Record an informational event within an optional scope.
     ///
     /// This is a convenience wrapper around [`record_with_kind`] that records
@@ -300,7 +373,6 @@ impl Journal {
     ) -> RecordId {
         self.record_with_kind(scope, EventKind::Info, message)
     }
-
 
     /// Record an event with an explicit [`EventKind`], optionally associated
     /// with a scope.
@@ -397,33 +469,6 @@ impl Journal {
         &self.records
     }
 
-    /// Append the journal to a human-readable file.
-    ///
-    /// Each scope is shown with outcome and duration.
-    /// Events are listed under each scope with bullets (`•`), fallback to `*` on Windows.
-    ///
-    /// **Note**: For more flexible output options, see [`JournalWriter`].
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::journal::Journal;
-    /// use eventline::outcome::Outcome;
-    /// 
-    /// let mut journal = Journal::new();
-    /// let scope_id = journal.enter_scope_unnamed(None);
-    /// journal.record(Some(scope_id), "Test event");
-    /// journal.exit_scope(scope_id, Outcome::Success);
-    /// journal.write_to_file("eventline.log").unwrap();
-    /// ```
-    pub fn write_to_file(&self, path: &str) -> std::io::Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-
-        JournalWriter::new().write_to(&mut file, self)
-    }
-
     /// Record a warning event within an optional scope.
     ///
     /// Warnings indicate something unexpected or suboptimal happened,
@@ -455,7 +500,6 @@ impl Default for Journal {
         Self::new()
     }
 }
-
 
 #[cfg(test)]
 mod validation_tests {

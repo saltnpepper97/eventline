@@ -59,8 +59,9 @@ pub mod log_level;
 pub mod macros;
 pub mod tests;
 
-use live_log::append as live_append;
 use std::sync::{Mutex, RwLock};
+use std::collections::HashSet;
+use futures::FutureExt;
 
 use crate::event_kind::EventKind;
 use crate::id::ScopeId;
@@ -83,6 +84,7 @@ thread_local! {
 struct Runtime {
     /// The underlying journal, protected by a mutex for safe concurrent access.
     journal: Mutex<Journal>,
+    written_headers: Mutex<HashSet<ScopeId>>
 }
 
 /// Initialize the global runtime.
@@ -106,6 +108,7 @@ pub fn init() {
     let mut runtime = RUNTIME.write().unwrap();
     *runtime = Some(Runtime {
         journal: Mutex::new(Journal::new()),
+        written_headers: Mutex::new(HashSet::new()),
     });
 }
 
@@ -233,29 +236,61 @@ pub fn record(kind: EventKind, message: impl Into<String>) {
 
     let message = message.into();
 
-    // Journal
+    // --- Journal ---
     if let Some(rt) = RUNTIME.read().unwrap().as_ref() {
         let scope = CURRENT_SCOPE.with(|s| s.get());
 
-        let mut journal = match rt.journal.lock() {
-            Ok(j) => j,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-
+        let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
         journal.record_with_kind(scope, kind, &message);
     }
 
-    // Console
+    // --- Console output ---
     if console::is_console_enabled() {
         let _ = std::panic::catch_unwind(|| console::print_event(kind, &message));
     }
 
-    // Live log
-    let _ = std::panic::catch_unwind(|| {
-        let line = format!("[{:?}] {}", kind, message);
-        live_append(&line);
-    });
+    // --- Live log ---
+    if let Some(rt) = RUNTIME.read().unwrap().as_ref() {
+        let journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Find the current scope
+        if let Some(current_scope_id) = journal.scopes().iter().rev()
+            .find(|s| s.exited_at.is_none())
+            .map(|s| s.id)
+        {
+            // --- Use written_headers set instead of Journal methods ---
+            let mut headers = rt.written_headers.lock().unwrap();
+            if !headers.contains(&current_scope_id) {
+                if let Some(scope) = journal.get_scope(current_scope_id) {
+                    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+                    let outcome = journal.scope_outcome(Some(current_scope_id)).unwrap_or(Outcome::Success);
+                    let elapsed_secs = scope.elapsed().as_secs_f64();
+
+                    let header = format!(
+                        "[{}] Scope {} ({:?}) [{:.3}s]",
+                        timestamp,
+                        scope.id.0,
+                        outcome,
+                        elapsed_secs
+                    );
+
+                    live_log::append(&header);
+                    headers.insert(current_scope_id);
+                }
+            }
+
+            // Compute prefix based on scope depth
+            let scope_prefix = {
+                let path_len = journal.scope_path(Some(current_scope_id)).len();
+                "  ".repeat(path_len.saturating_sub(1))
+            };
+
+            let bullet_line = format!("• {}: {}", kind.as_str().to_lowercase(), message);
+            live_log::append(&format!("{}{}", scope_prefix, bullet_line));
+        }
+    }
 }
+
 
 /// Record an informational event.
 ///
@@ -367,6 +402,54 @@ where
     CURRENT_SCOPE.with(|s| s.set(prev_scope));
 
     // Exit scope with appropriate outcome
+    let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+    match result {
+        Ok(value) => {
+            journal.exit_scope(scope_id, Outcome::Success);
+            value
+        }
+        Err(panic) => {
+            journal.exit_scope(scope_id, Outcome::Aborted);
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+/// Async version of `scoped`.
+///
+/// Wraps the async closure in a scope, marking success/aborted automatically.
+pub async fn scoped_async<S, F, Fut, R>(name: Option<S>, f: F) -> R
+where
+    S: Into<String>,
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = R>,
+{
+    let runtime_guard = RUNTIME.read().unwrap();
+    let rt = runtime_guard
+        .as_ref()
+        .expect("eventline runtime not initialized - call runtime::init() first");
+
+    // Enter scope
+    let scope_id = {
+        let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
+        let parent = CURRENT_SCOPE.with(|s| s.get());
+        journal.enter_scope(parent, name)
+    };
+
+    // Save previous scope and set new
+    let prev_scope = CURRENT_SCOPE.with(|s| {
+        let old = s.get();
+        s.set(Some(scope_id));
+        old
+    });
+
+    // Run the async closure and catch panics
+    let result = std::panic::AssertUnwindSafe(f()).catch_unwind().await;
+
+    // Restore previous scope
+    CURRENT_SCOPE.with(|s| s.set(prev_scope));
+
+    // Exit scope with proper outcome
     let mut journal = rt.journal.lock().unwrap_or_else(|e| e.into_inner());
     match result {
         Ok(value) => {

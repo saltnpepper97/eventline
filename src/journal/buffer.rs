@@ -88,6 +88,7 @@ impl JournalBuffer {
             parent,
             entered_at: current_millis(),
             name: name.into(),
+            exited_at: None,
         });
 
         id
