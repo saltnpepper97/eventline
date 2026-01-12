@@ -18,7 +18,7 @@
 #[macro_export]
 macro_rules! event_info_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), || async {
+        $crate::runtime::scoped_async(Some($scope), move || async {
             $crate::runtime::info(format!($($arg)*)).await;
         })
     };
@@ -40,7 +40,7 @@ macro_rules! event_info_scoped {
 #[macro_export]
 macro_rules! event_warn_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), || async {
+        $crate::runtime::scoped_async(Some($scope), move || async {
             $crate::runtime::warn(format!($($arg)*)).await;
         })
     };
@@ -62,7 +62,7 @@ macro_rules! event_warn_scoped {
 #[macro_export]
 macro_rules! event_error_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), || async {
+        $crate::runtime::scoped_async(Some($scope), move || async {
             $crate::runtime::error(format!($($arg)*)).await;
         })
     };
@@ -84,8 +84,9 @@ macro_rules! event_error_scoped {
 #[macro_export]
 macro_rules! event_debug_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), || async {
+        $crate::runtime::scoped_async(Some($scope), move || async {
             $crate::runtime::debug(format!($($arg)*)).await;
         })
     };
 }
+
