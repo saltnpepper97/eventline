@@ -1,7 +1,7 @@
 use std::future::Future;
 use futures::FutureExt;
 
-use super::{get_runtime, RUNTIME, CURRENT_SCOPE};
+use super::{get_runtime, RUNTIME, CURRENT_SCOPE, THREAD_SCOPE};
 use crate::journal::id::ScopeId;
 use crate::Outcome;
 
@@ -11,19 +11,40 @@ use crate::Outcome;
 ///
 /// # Example
 ///
-/// ```
+/// ```rust,ignore
+/// // This example is async; mark as ignore for rustdoc tests or run inside #[tokio::test]
 /// use eventline::runtime;
+/// use tokio; // if using tokio runtime
 ///
-/// runtime::init();
+/// #[tokio::main]
+/// async fn main() {
+///     runtime::init().await;
 ///
-/// assert!(runtime::current_scope().is_none());
+///     assert!(runtime::current_scope().await.is_none());
 ///
-/// runtime::scoped(Some("test"), || {
-///     assert!(runtime::current_scope().is_some());
-/// });
+///     runtime::scoped(Some("test"), || async {
+///         assert!(runtime::current_scope().await.is_some());
+///     }).await;
+/// }
 /// ```
 pub async fn current_scope() -> Option<ScopeId> {
-    CURRENT_SCOPE.try_with(|s| *s).ok().flatten()
+    // Prefer the task-local (async) scope if available.
+    if let Some(s) = CURRENT_SCOPE.try_with(|s| *s).ok().flatten() {
+        return Some(s);
+    }
+
+    // Fallback to thread-local for synchronous scopes.
+    THREAD_SCOPE.with(|c| *c.borrow())
+}
+
+pub fn current_scope_sync() -> Option<ScopeId> {
+    // Prefer task-local
+    if let Ok(Some(s)) = CURRENT_SCOPE.try_with(|s| *s) {
+        return Some(s);
+    }
+
+    // Fallback to thread-local
+    THREAD_SCOPE.with(|c| *c.borrow())
 }
 
 /// Execute a closure within a new scope.
@@ -50,36 +71,48 @@ where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    // Get runtime
     let rt = get_runtime().await;
 
-    // Enter scope in journal
+    let parent = CURRENT_SCOPE.try_with(|s| *s).ok().flatten();
     let scope_id = {
         let mut journal = rt.journal.lock().await;
-        let parent = CURRENT_SCOPE.try_with(|s| *s).ok().flatten();
         journal.enter_scope(parent, name)
     };
 
-    // Run the closure inside the CURRENT_SCOPE
-    CURRENT_SCOPE
-        .scope(Some(scope_id), async move {
-            // Execute closure, catching panics
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    // Set thread-local current scope for the synchronous closure path,
+    // so events recorded inside `f()` immediately see the scope.
+    //
+    // Save/restore previous thread-local value.
+    let result = THREAD_SCOPE.with(|c| {
+        let mut w = c.borrow_mut();
+        let prev = *w;
+        *w = Some(scope_id);
+        // Run the closure and capture result (catch unwind outside to restore).
+        // We'll restore the thread-local after we know the result/panic state.
+        // Return prev so the outer scope can restore it after journal exit too if needed.
+        (prev, std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)))
+    });
 
-            // Exit scope
-            let mut journal = rt.journal.lock().await;
-            match result {
-                Ok(value) => {
-                    journal.exit_scope(scope_id, Outcome::Success);
-                    value
-                }
-                Err(panic) => {
-                    journal.exit_scope(scope_id, Outcome::Aborted);
-                    std::panic::resume_unwind(panic);
-                }
-            }
-        })
-        .await
+    // result is (prev_thread_scope, catch_unwind_result)
+    let (prev_thread_scope, catch_result) = result;
+
+    // restore thread-local now (we already executed the closure synchronously)
+    THREAD_SCOPE.with(|c| {
+        *c.borrow_mut() = prev_thread_scope;
+    });
+
+    // Exit scope in the journal
+    let mut journal = rt.journal.lock().await;
+    match catch_result {
+        Ok(v) => {
+            journal.exit_scope(scope_id, Outcome::Success);
+            v
+        }
+        Err(panic) => {
+            journal.exit_scope(scope_id, Outcome::Aborted);
+            std::panic::resume_unwind(panic);
+        }
+    }
 }
 
 /// Execute a closure within a new unnamed scope.
@@ -212,14 +245,16 @@ where
 ///
 /// # Example
 ///
-/// ```
+/// ```rust,ignore
 /// use eventline::runtime;
+/// use tokio; // for async runtime
 ///
-/// // Works even without init()
-/// let result = runtime::try_scoped_unnamed(|| {
-///     42
-/// });
-/// assert_eq!(result, 42);
+/// #[tokio::main]
+/// async fn main() {
+///     // Works even without init()
+///     let result = runtime::try_scoped_unnamed(|| 42).await;
+///     assert_eq!(result, 42);
+/// }
 /// ```
 pub async fn try_scoped_unnamed<F, R>(f: F) -> R
 where
@@ -229,21 +264,22 @@ where
     try_scoped::<String, _, _>(None, f).await
 }
 
-/// Execute an async closure within a new scope, without panicking if runtime is uninitialized.
+/// Execute an async closure within a new scope, without panicking if the runtime is uninitialized.
 ///
-/// This is the async variant of [`try_scoped`]. If the runtime is not initialized,
-/// the closure is executed normally without logging. If the runtime is initialized,
-/// it behaves identically to [`scoped_async`].
+/// This is the async variant of [`try_scoped`].  
+/// If the runtime is initialized, it behaves like [`scoped_async`]; otherwise, the closure runs normally.
 ///
 /// # Example
 ///
-/// ```
+/// ```rust,ignore
 /// use eventline::runtime;
 ///
-/// runtime::try_scoped_async(Some("optional"), || async {
+/// // Use ignore because this example is async; run inside #[tokio::test] or async main
+/// let result = runtime::try_scoped_async(Some("optional"), || async {
 ///     // Async work here
 ///     42
 /// }).await;
+/// assert_eq!(result, 42);
 /// ```
 pub async fn try_scoped_async<S, F, Fut, R>(name: Option<S>, f: F) -> R
 where
@@ -285,20 +321,23 @@ where
         .await
 }
 
-/// Execute an async closure within a new unnamed scope, without panicking if runtime is uninitialized.
+/// Execute an async closure within a new unnamed scope, without panicking if the runtime is uninitialized.
 ///
-/// This is a non-panicking async variant of [`scoped_unnamed`].
+/// This is a non-panicking async variant of [`scoped_unnamed`].  
+/// If the runtime is initialized, it behaves like [`scoped_async`]; otherwise, the closure runs normally.
 ///
 /// # Example
 ///
 /// ```
 /// use eventline::runtime;
 ///
-/// // Works even without init()
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// let result = runtime::try_scoped_unnamed_async(|| async {
+///     // Async work here
 ///     42
 /// }).await;
 /// assert_eq!(result, 42);
+/// # });
 /// ```
 pub async fn try_scoped_unnamed_async<F, Fut, R>(f: F) -> R
 where

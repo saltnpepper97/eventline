@@ -1,4 +1,4 @@
-use super::{console, RUNTIME, CURRENT_SCOPE, live_log, log_level};
+use super::{console, RUNTIME, live_log, log_level};
 
 use crate::journal::event_kind::EventKind;
 use crate::journal::outcome::Outcome;
@@ -36,7 +36,7 @@ pub async fn record(kind: EventKind, message: impl Into<String>) {
 
     if let Some(rt) = rt_opt {
         // --- Journal ---
-        let scope = CURRENT_SCOPE.try_with(|s| *s).ok().flatten();
+        let scope = crate::runtime::scope::current_scope_sync();
 
         let mut journal = rt.journal.lock().await;
         journal.record_with_kind(scope, kind, &message);

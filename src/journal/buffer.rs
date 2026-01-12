@@ -32,7 +32,7 @@ use super::record::{Record, RecordKind};
 /// ```rust
 /// use eventline::journal::Journal;
 /// use eventline::journal::buffer::JournalBuffer;
-/// use eventline::outcome::Outcome;
+/// use eventline::journal::outcome::Outcome;
 /// 
 /// let mut journal = Journal::new();
 /// let mut buffer = journal.create_buffer();
@@ -101,7 +101,7 @@ impl JournalBuffer {
     /// # Example
     /// ```
     /// use eventline::journal::buffer::JournalBuffer;
-    /// use eventline::outcome::Outcome;
+    /// use eventline::journal::outcome::Outcome;
     /// 
     /// let mut buffer = JournalBuffer::new();
     /// let scope_id = buffer.enter_scope(None, None);
@@ -151,7 +151,7 @@ impl JournalBuffer {
     /// # Example
     /// ```
     /// use eventline::journal::buffer::JournalBuffer;
-    /// use eventline::event_kind::EventKind;
+    /// use eventline::journal::event_kind::EventKind;
     /// 
     /// let mut buffer = JournalBuffer::new();
     /// let scope = buffer.enter_scope(None, None);

@@ -247,7 +247,7 @@ impl Journal {
     /// # Example
     /// ```
     /// use eventline::journal::Journal;
-    /// use eventline::outcome::Outcome;
+    /// use eventline::journal::outcome::Outcome;
     /// 
     /// let mut journal = Journal::new();
     /// let scope_id = journal.enter_scope_unnamed(None);
@@ -322,7 +322,7 @@ impl Journal {
     ///
     /// ```
     /// use eventline::journal::Journal;
-    /// use eventline::outcome::Outcome;
+    /// use eventline::journal::outcome::Outcome;
     ///
     /// let mut journal = Journal::new();
     /// let scope = journal.enter_scope_unnamed(None);
@@ -411,7 +411,7 @@ impl Journal {
     ///
     /// ```
     /// use eventline::journal::Journal;
-    /// use eventline::event_kind::EventKind;
+    /// use eventline::journal::event_kind::EventKind;
     ///
     /// let mut journal = Journal::new();
     /// let scope = journal.enter_scope_unnamed(None);
@@ -506,5 +506,3 @@ impl Default for Journal {
         Self::new()
     }
 }
-
-

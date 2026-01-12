@@ -9,9 +9,9 @@
 //! # Examples
 //!
 //! ```
-//! use eventline::filter::{Filter, ScopeFilter, EventFilter};
-//! use eventline::outcome::Outcome;
-//! use eventline::event_kind::EventKind;
+//! use eventline::journal::filter::{Filter, ScopeFilter, EventFilter};
+//! use eventline::journal::outcome::Outcome;
+//! use eventline::journal::event_kind::EventKind;
 //!
 //! // Filter for failed scopes
 //! let failed_only = Filter::scope(ScopeFilter::Outcome(Outcome::Failure));
@@ -92,8 +92,8 @@ impl ScopeFilter {
     ///
     /// # Example
     /// ```
-    /// use eventline::filter::ScopeFilter;
-    /// use eventline::outcome::Outcome;
+    /// use eventline::journal::filter::ScopeFilter;
+    /// use eventline::journal::outcome::Outcome;
     ///
     /// let filter = ScopeFilter::Outcome(Outcome::Failure)
     ///     .and(ScopeFilter::MinDepth(1));

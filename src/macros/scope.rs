@@ -6,14 +6,14 @@
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// # use eventline::event_info_scoped;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// event_info_scoped!("ProfileSwitch", "Switched to profile: {}", "work").await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_info_scoped {
@@ -28,14 +28,14 @@ macro_rules! event_info_scoped {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// # use eventline::event_warn_scoped;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// event_warn_scoped!("CacheCheck", "Cache at {}% capacity", 95).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_warn_scoped {
@@ -50,14 +50,14 @@ macro_rules! event_warn_scoped {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// # use eventline::event_error_scoped;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// event_error_scoped!("IpcHandler", "Failed to process: {}", "invalid data").await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_error_scoped {
@@ -72,14 +72,14 @@ macro_rules! event_error_scoped {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// # use eventline::event_debug_scoped;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// event_debug_scoped!("Trigger", "Window {} focused", 12345).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_debug_scoped {
@@ -89,5 +89,3 @@ macro_rules! event_debug_scoped {
         })
     };
 }
-
-

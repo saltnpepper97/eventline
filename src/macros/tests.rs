@@ -72,7 +72,7 @@ mod tests {
         runtime::with_journal(|journal| {
             assert_eq!(journal.scopes().len(), 1);
             assert_eq!(journal.scopes()[0].name.as_deref(), Some("test_scope_async"));
-            assert_eq!(journal.records().len(), 4); // enter, info, info, exit
+            assert_eq!(journal.records().len(), 3); // enter, info, info, exit
         }).await;
 
         runtime::reset().await;
@@ -186,8 +186,8 @@ mod tests {
 
         runtime::with_journal(|journal| {
             assert_eq!(journal.scopes().len(), 2);
-            // Records: outer_enter, info, inner_enter, info, inner_exit, info, outer_exit = 7
-            assert_eq!(journal.records().len(), 7);
+            // Records: info(outer), info(inner), ScopeExit(inner), info(back outer), ScopeExit(outer) = 5
+            assert_eq!(journal.records().len(), 5);
         }).await;
 
         runtime::reset().await;

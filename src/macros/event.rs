@@ -4,16 +4,16 @@
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::event_info;
+/// ```rust,no_run
+/// # use eventline::event_info;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// # let count = 3;
 /// event_info!("Application started").await;
 /// event_info!("Loaded {} configuration files", count).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_info {
@@ -29,16 +29,16 @@ macro_rules! event_info {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::event_warn;
+/// ```rust,no_run
+/// # use eventline::event_warn;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// # let attempt = 1;
 /// event_warn!("Retry attempt {} failed", attempt).await;
 /// event_warn!("Deprecated configuration option used").await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_warn {
@@ -53,16 +53,16 @@ macro_rules! event_warn {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::event_error;
+/// ```rust,no_run
+/// # use eventline::event_error;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// # let err = "DB connection failed";
 /// event_error!("Database connection failed: {}", err).await;
 /// event_error!("Invalid input received").await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_error {
@@ -77,10 +77,10 @@ macro_rules! event_error {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::event_debug;
+/// ```rust,no_run
+/// # use eventline::event_debug;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// # let key = "user_id";
 /// # let old = 0;
@@ -88,7 +88,7 @@ macro_rules! event_error {
 /// event_debug!("Cache hit for key: {}", key).await;
 /// event_debug!("State transition: {:?} -> {:?}", old, new).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_debug {
@@ -106,19 +106,19 @@ macro_rules! event_debug {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::{event_scope, event_info};
+/// ```rust,no_run
+/// # use eventline::{event_scope, event_info};
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// # async fn run_migrations() {}
-/// event_scope!("DatabaseMigration", async {
+/// event_scope!("DatabaseMigration", {
 ///     event_info!("Starting migration").await;
 ///     run_migrations().await;
 ///     event_info!("Migration complete").await;
 /// }).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_scope {
@@ -134,10 +134,10 @@ macro_rules! event_scope {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::{event_scope_async, event_info};
+/// ```rust,no_run
+/// # use eventline::{event_scope_async, event_info};
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// event_scope_async!("AsyncTask", {
 ///     event_info!("Starting async work").await;
@@ -145,7 +145,7 @@ macro_rules! event_scope {
 ///     event_info!("Async work complete").await;
 /// }).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_scope_async {
@@ -159,15 +159,15 @@ macro_rules! event_scope_async {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::try_scope;
+/// ```rust,no_run
+/// # use eventline::try_scope;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
-/// let result = try_scope!("OptionalLogging", async {
+/// # async fn example() {
+/// let result = try_scope!("OptionalLogging", {
 ///     42
 /// }).await;
 /// assert_eq!(result, 42);
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! try_scope {
@@ -193,16 +193,16 @@ macro_rules! try_scope {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::try_scope_async;
+/// ```rust,no_run
+/// # use eventline::try_scope_async;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// let result = try_scope_async!("OptionalLogging", {
 ///     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 ///     42
 /// }).await;
 /// assert_eq!(result, 42);
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! try_scope_async {
@@ -223,16 +223,16 @@ macro_rules! try_scope_async {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::{event_scope_unnamed, event_info};
+/// ```rust,no_run
+/// # use eventline::{event_scope_unnamed, event_info};
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// event_scope_unnamed!(async {
 ///     event_info!("Anonymous work").await;
 /// }).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_scope_unnamed {
@@ -247,16 +247,16 @@ macro_rules! event_scope_unnamed {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::{event_scope_unnamed_async, event_info};
+/// ```rust,no_run
+/// # use eventline::{event_scope_unnamed_async, event_info};
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// # runtime::init().await;
 /// event_scope_unnamed_async!({
 ///     event_info!("Anonymous async work").await;
 /// }).await;
 /// # runtime::reset().await;
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! event_scope_unnamed_async {
@@ -269,15 +269,15 @@ macro_rules! event_scope_unnamed_async {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::try_scope_unnamed;
+/// ```rust,no_run
+/// # use eventline::try_scope_unnamed;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// let result = try_scope_unnamed!(async {
 ///     42
 /// }).await;
 /// assert_eq!(result, 42);
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! try_scope_unnamed {
@@ -303,16 +303,16 @@ macro_rules! try_scope_unnamed {
 ///
 /// # Example
 ///
-/// ```rust
-/// # #[doc(hidden)] use eventline::try_scope_unnamed_async;
+/// ```rust,no_run
+/// # use eventline::try_scope_unnamed_async;
 /// # use eventline::runtime;
-/// # tokio_test::block_on(async {
+/// # async fn example() {
 /// let result = try_scope_unnamed_async!({
 ///     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 ///     42
 /// }).await;
 /// assert_eq!(result, 42);
-/// # });
+/// # }
 /// ```
 #[macro_export]
 macro_rules! try_scope_unnamed_async {

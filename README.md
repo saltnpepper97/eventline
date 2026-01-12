@@ -20,7 +20,7 @@ Eventline records *what happened*, *when it happened*, and *in what causal conte
 - **High-throughput batching** — `JournalBuffer` for batch writes
 - **Dual-layer API** — pure core + optional runtime facade
 - **Async runtime support** — fire-and-forget logging and async scopes (`scoped_async()`)
-- **Deterministic replay** — safe concurrent reads, reliable audit trailsa
+- **Deterministic replay** — safe concurrent reads, reliable audit trails
 
 ---
 
@@ -33,42 +33,43 @@ For applications and daemons:
 ```rust
 use eventline::runtime;
 use eventline::runtime::log_level::{set_log_level, LogLevel};
-use eventline::{event_info, event_warn, event_error, event_debug};
+use eventline::{event_info, event_warn, event_error, event_debug, event_scope};
 use std::path::PathBuf;
 
-fn main() {
-    runtime::init();
+#[tokio::main]
+async fn main() {
+    runtime::init().await;
 
     // Enable dual output: journal + console
-    runtime::enable_console_output(true);
-    runtime::enable_console_color(true);
+    runtime::enable_console_output(true).await;
+    runtime::enable_console_color(true).await;
 
     // Enable live logging to disk
     let log_path = PathBuf::from("/tmp/eventline.log");
-    runtime::enable_live_logging(log_path);
+    runtime::enable_live_logging(log_path).await;
 
     // Set runtime log level
-    set_log_level(LogLevel::Warning);
+    set_log_level(LogLevel::Warning).await;
 
-    event_info!("This will NOT be logged");
-    event_warn!("Cache approaching limit");          // Journaled + printed + live
-    event_error!("Database connection failed");      // Journaled + printed + live
-    event_debug!("Verbose debug info");              // Filtered out
+    event_info!("This will NOT be logged").await;
+    event_warn!("Cache approaching limit").await;          // Journaled + printed + live
+    event_error!("Database connection failed").await;      // Journaled + printed + live
+    event_debug!("Verbose debug info").await;              // Filtered out
 
     event_scope!("RequestHandler", {
-        event_info!("Processing request");           // Filtered out
-        event_warn!("Retry attempt failed");         // Journaled + printed + live
-    });
+        event_info!("Processing request").await;           // Filtered out
+        event_warn!("Retry attempt failed").await;         // Journaled + printed + live
+    }).await;
 
     // Journal is now live-appended automatically; no manual flush required
 }
 ```
 
-### Runtime API (Async)
+### Runtime API (Async Scopes)
 
 ```rust
 use eventline::runtime;
-use eventline::event_info;
+use eventline::{event_info, event_scope_async, event_scope_unnamed};
 
 #[tokio::main]
 async fn main() {
@@ -76,15 +77,21 @@ async fn main() {
     runtime::init().await;
 
     // Enable console output
-    runtime::enable_console_output(true);
-    runtime::enable_console_color(true);
+    runtime::enable_console_output(true).await;
+    runtime::enable_console_color(true).await;
 
     // Fire-and-forget logging
-    runtime::info("Async logging example").await;
+    event_info!("Async logging example").await;
 
-    // Scoped async task
-    runtime::scoped_async(Some("AsyncTask"), || async {
-        runtime::info("Inside async scope").await;
+    // Named async scope
+    event_scope_async!("AsyncTask", {
+        event_info!("Inside async scope").await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }).await;
+
+    // Unnamed async scope (note: requires 'async' keyword)
+    event_scope_unnamed!(async {
+        event_info!("Unnamed async work").await;
     }).await;
 }
 ```
@@ -94,7 +101,9 @@ async fn main() {
 For libraries or embedded systems:
 
 ```rust
-use eventline::{Journal, Outcome};
+use eventline::journal::Journal;
+use eventline::journal::outcome::Outcome;
+use eventline::journal::writer::JournalWriter;
 
 let mut journal = Journal::new();
 
@@ -103,7 +112,9 @@ journal.scoped(None, Some("Task"), |journal, scope| {
     journal.warn(Some(scope), "Low memory");
 });
 
-journal.write_to_file("events.log").unwrap();
+// Use JournalWriter to output the journal
+let writer = JournalWriter::new();
+// writer.write_to(&mut std::fs::File::create("events.log")?, &journal)?;
 ```
 
 ---
@@ -134,7 +145,7 @@ journal.write_to_file("events.log").unwrap();
 **Runtime Layer** (optional):
 - **runtime** — Global facade
 - **console** — Dual output control
-- live_log — Automatic, timestamped disk logging
+- **live_log** — Automatic, timestamped disk logging
 - **Macros** — Zero-overhead convenience
 - **Log levels** — Runtime event filtering
 
@@ -142,16 +153,16 @@ journal.write_to_file("events.log").unwrap();
 
 ## Live Logging
 
-Live logging is **enabled per fiel path** using
+Live logging is **enabled per file path** using
 `runtime::enable_live_logging(PathBuf)`
 
 ```rust
 use std::path::PathBuf;
-runtime::enable_live_logging(PathBuf::from("/tmp/eventline.log"));
 
-event_info!("This event will be written to the live log file automatically");
-event_warn!("Timestamped and indented according to scope depth");
+runtime::enable_live_logging(PathBuf::from("/tmp/eventline.log")).await;
 
+event_info!("This event will be written to the live log file automatically").await;
+event_warn!("Timestamped and indented according to scope depth").await;
 ```
 
 ---
@@ -163,27 +174,27 @@ Eventline supports two output modes:
 ### Silent Journaling (Default)
 Events are recorded but not printed:
 ```rust
-runtime::init();
-runtime::enable_console_output(false); // Default
+runtime::init().await;
+runtime::enable_console_output(false).await; // Default
 
-event_info!("Silent"); // Recorded, not printed
+event_info!("Silent").await; // Recorded, not printed
 
 // Later, examine the journal
 runtime::with_journal(|journal| {
-    eventline::renderer::render_journal_tree(journal, true, None);
-});
+    eventline::render::render_journal_tree(journal, true, None);
+}).await;
 ```
 
 ### Dual Output (Traditional Logging Feel)
 Events are both journaled AND printed to console:
 ```rust
-runtime::init();
-runtime::enable_console_output(true);
-runtime::enable_console_color(true);
+runtime::init().await;
+runtime::enable_console_output(true).await;
+runtime::enable_console_color(true).await;
 
-event_info!("Starting");  // Journaled + printed
-event_warn!("Warning");   // Journaled + printed in yellow
-event_error!("Error");    // Journaled + printed to stderr in red
+event_info!("Starting").await;  // Journaled + printed
+event_warn!("Warning").await;   // Journaled + printed in yellow
+event_error!("Error").await;    // Journaled + printed to stderr in red
 ```
 
 **Benefits:**
@@ -218,7 +229,9 @@ This separation enables:
 Filtering happens when **reading** the journal, not when writing:
 
 ```rust
-use eventline::{Filter, ScopeFilter, EventFilter, EventKind, Outcome};
+use eventline::journal::filter::{Filter, ScopeFilter, EventFilter};
+use eventline::journal::event_kind::EventKind;
+use eventline::journal::outcome::Outcome;
 
 // Show only failed scopes
 let filter = Filter::scope(ScopeFilter::Outcome(Outcome::Failure));
@@ -246,12 +259,72 @@ Benefits:
 
 ---
 
+## Scoped Macros
+
+### Named Scopes
+
+```rust
+// Standard named scope
+event_scope!("TaskName", {
+    event_info!("Work happening").await;
+}).await;
+
+// Async variant (explicit async support)
+event_scope_async!("AsyncTask", {
+    event_info!("Async work").await;
+    tokio::time::sleep(Duration::from_millis(10)).await;
+}).await;
+```
+
+### Unnamed Scopes
+
+```rust
+// Unnamed scope - requires 'async' keyword
+event_scope_unnamed!(async {
+    event_info!("Anonymous work").await;
+}).await;
+
+// Async variant
+event_scope_unnamed_async!({
+    event_info!("Anonymous async work").await;
+}).await;
+```
+
+### Try Scopes (No-Panic)
+
+```rust
+// Named scope without panicking if runtime uninitialized
+try_scope!("OptionalScope", {
+    event_info!("Safe logging").await;
+}).await;
+
+// Unnamed scope without panicking
+try_scope_unnamed!(async {
+    event_info!("Safe anonymous logging").await;
+}).await;
+```
+
+### Single-Line Scoped Events
+
+For IPC handlers and event callbacks where you want scope context without wrapping a block:
+
+```rust
+// These create a scope and log a single event
+event_info_scoped!("ProfileSwitch", "Switched to profile: {}", profile_name).await;
+event_warn_scoped!("CacheCheck", "Cache at {}% capacity", 95).await;
+event_error_scoped!("IpcHandler", "Failed to process: {}", error).await;
+event_debug_scoped!("Trigger", "Window {} focused", window_id).await;
+```
+
+---
+
 ## CLI Integration
 
 Typical pattern for command-line tools:
 
 ```rust
 use clap::Parser;
+use eventline::runtime::log_level::{set_log_level, LogLevel};
 
 #[derive(Parser)]
 struct Args {
@@ -268,34 +341,35 @@ struct Args {
     no_color: bool,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
     
-    runtime::init();
+    runtime::init().await;
 
     if args.quiet {
-        runtime::enable_console_output(false);
-        set_log_level(LogLevel::Warning);
+        runtime::enable_console_output(false).await;
+        set_log_level(LogLevel::Warning).await;
     } else {
-        runtime::enable_console_output(true);
-        runtime::enable_console_color(!args.no_color);
+        runtime::enable_console_output(true).await;
+        runtime::enable_console_color(!args.no_color).await;
         
         if args.verbose {
-            set_log_level(LogLevel::Debug);
+            set_log_level(LogLevel::Debug).await;
         } else {
-            set_log_level(LogLevel::Info);
+            set_log_level(LogLevel::Info).await;
         }
     }
 
-    event_info!("Application started");
+    event_info!("Application started").await;
     
     // Your application logic here
     
     // At exit, optionally render summary with same color setting
     runtime::with_journal(|journal| {
         let use_color = !args.no_color;
-        eventline::renderer::render_summary(journal, use_color, None);
-    });
+        eventline::render::render_summary(journal, use_color, None);
+    }).await;
 }
 ```
 
@@ -306,6 +380,9 @@ fn main() {
 ### Batched Logging
 
 ```rust
+use eventline::journal::Journal;
+use eventline::journal::outcome::Outcome;
+
 let mut journal = Journal::new();
 let mut buffer = journal.create_buffer();
 
@@ -321,7 +398,7 @@ journal.flush_buffer(buffer); // Atomic ID rebase
 ### Custom Output
 
 ```rust
-use eventline::JournalWriter;
+use eventline::journal::writer::JournalWriter;
 use std::io;
 
 let mut file = std::fs::File::create("output.log")?;
@@ -340,19 +417,19 @@ JournalWriter::new()
 ### Nested Scopes
 
 ```rust
-runtime::scoped(Some("Deployment"), || {
-    event_info!("Starting deployment");
+event_scope!("Deployment", {
+    event_info!("Starting deployment").await;
     
-    runtime::scoped(Some("BuildImage"), || {
-        event_info!("Building Docker image");
-    });
+    event_scope!("BuildImage", {
+        event_info!("Building Docker image").await;
+    }).await;
     
-    runtime::scoped(Some("PushRegistry"), || {
-        event_info!("Pushing to registry");
-    });
+    event_scope!("PushRegistry", {
+        event_info!("Pushing to registry").await;
+    }).await;
     
-    event_info!("Deployment complete");
-});
+    event_info!("Deployment complete").await;
+}).await;
 ```
 
 ### Environment Variable Support
@@ -360,12 +437,15 @@ runtime::scoped(Some("Deployment"), || {
 Respect common conventions:
 
 ```rust
-fn main() {
-    runtime::init();
+use eventline::runtime::log_level::{set_log_level, LogLevel};
+
+#[tokio::main]
+async fn main() {
+    runtime::init().await;
     
     // Respect NO_COLOR
     let use_color = std::env::var("NO_COLOR").is_err();
-    runtime::enable_console_color(use_color);
+    runtime::enable_console_color(use_color).await;
     
     // Optional: RUST_LOG compatibility
     let log_level = std::env::var("RUST_LOG")
@@ -378,8 +458,8 @@ fn main() {
         })
         .unwrap_or(LogLevel::Info);
     
-    set_log_level(log_level);
-    runtime::enable_console_output(true);
+    set_log_level(log_level).await;
+    runtime::enable_console_output(true).await;
 }
 ```
 
@@ -406,18 +486,18 @@ Once written, entries are **never modified or removed**:
 ### Test-Friendly
 
 ```rust
-#[test]
-fn test_task() {
-    runtime::init();
-    runtime::enable_console_output(false); // Quiet in tests
+#[tokio::test]
+async fn test_task() {
+    runtime::init().await;
+    runtime::enable_console_output(false).await; // Quiet in tests
     
-    event_info!("test");
+    event_info!("test").await;
     
     runtime::with_journal(|journal| {
         assert_eq!(journal.records().len(), 1);
-    });
+    }).await;
     
-    runtime::reset(); // Clean up
+    runtime::reset().await; // Clean up
 }
 ```
 
@@ -427,14 +507,15 @@ fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.3.0"
+eventline = "0.3.1"
+tokio = { version = "1", features = ["full"] }
 ```
 
 Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.3.0", features = ["colour"] }
+eventline = { version = "0.3.1", features = ["colour"] }
 ```
 
 ---
@@ -469,13 +550,14 @@ Focuses on local, human-readable execution traces with optional runtime log filt
 
 ## Version 0.3.0 — Highlights
 
-- **Async runtime support** — `init_async()`, `scoped_async()`, fire-and-forget logging from async tasks
-- Live logging — automatic timestamped file append
-- Runtime output formatting — indentation by scope depth, bullets, colors
-- Dual output mode — console + journal, fully async-safe
-- Removed unnecessary manual flush — runtime manages output automatically
-- Improved CLI integration — verbose, quiet, color flags respected
-- Internal cleanup — simpler, safer, maintainable runtime code
+- **Async runtime support** — `init().await`, `scoped_async()`, fire-and-forget logging from async tasks
+- **Live logging** — automatic timestamped file append
+- **Runtime output formatting** — indentation by scope depth, bullets, colors
+- **Dual output mode** — console + journal, fully async-safe
+- **Scoped event macros** — single-line events with scope context (`event_info_scoped!`, etc.)
+- **Removed unnecessary manual flush** — runtime manages output automatically
+- **Improved CLI integration** — verbose, quiet, color flags respected
+- **Internal cleanup** — simpler, safer, maintainable runtime code
 
 ---
 

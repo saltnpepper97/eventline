@@ -24,8 +24,8 @@ use crate::{
 /// # Example
 /// ```
 /// use eventline::journal::Journal;
-/// use eventline::filter::{Filter, ScopeFilter};
-/// use eventline::outcome::Outcome;
+/// use eventline::journal::filter::{Filter, ScopeFilter};
+/// use eventline::journal::outcome::Outcome;
 ///
 /// let mut journal = Journal::new();
 /// let scope = journal.enter_scope_unnamed(None);
@@ -33,11 +33,11 @@ use crate::{
 /// journal.exit_scope(scope, Outcome::Success);
 ///
 /// // Render everything
-/// eventline::renderer::render_journal_tree(&journal, true, None);
+/// eventline::render::render_journal_tree(&journal, true, None);
 ///
 /// // Render only failed scopes
 /// let filter = Filter::scope(ScopeFilter::Outcome(Outcome::Failure));
-/// eventline::renderer::render_journal_tree(&journal, true, Some(&filter));
+/// eventline::render::render_journal_tree(&journal, true, Some(&filter));
 /// ```
 pub fn render_journal_tree(journal: &Journal, color: bool, filter: Option<&Filter>) {
     let default_filter = Filter::default();

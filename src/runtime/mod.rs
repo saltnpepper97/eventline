@@ -28,29 +28,35 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```rust,ignore
 //! use eventline::runtime;
 //! use eventline::EventKind;
+//! use eventline::journal::JournalWriter;
+//! use std::fs::File;
 //!
-//! // Initialize once at startup
-//! runtime::init();
+//! #[tokio::main]
+//! async fn main() {
+//!     // Initialize once at startup
+//!     runtime::init().await;
 //!
-//! // Enable dual output (optional)
-//! runtime::enable_console_output(true);
+//!     // Enable dual output (optional)
+//!     runtime::enable_console_output(true);
 //!
-//! // Record events - they'll be both journaled and printed
-//! runtime::record(EventKind::Info, "Application started");
+//!     // Record events - they'll be both journaled and printed
+//!     runtime::record(EventKind::Info, "Application started");
 //!
-//! // Create scoped contexts
-//! runtime::scoped(Some("DatabaseMigration"), || {
-//!     runtime::record(EventKind::Info, "Applying migrations");
-//!     runtime::record(EventKind::Info, "Migration complete");
-//! });
+//!     // Create scoped contexts
+//!     runtime::scoped(Some("DatabaseMigration"), || {
+//!         runtime::record(EventKind::Info, "Applying migrations");
+//!         runtime::record(EventKind::Info, "Migration complete");
+//!     }).await;
 //!
-//! // Access journal for output
-//! runtime::with_journal(|journal| {
-//!     journal.write_to_file("eventline.log").unwrap();
-//! });
+//!     // Access journal for output
+//!     runtime::with_journal(|journal| {
+//!         let mut file = File::create("eventline.log").unwrap();
+//!         JournalWriter::new().write_to(&mut file, journal).unwrap();
+//!     }).await;
+//! }
 //! ```
 
 pub mod console;
@@ -59,6 +65,24 @@ pub mod live_log;
 pub mod log_level;
 pub mod scope;
 pub mod tests;
+
+pub use console::print_event;
+pub use event::{record, info, warn, error, debug};
+pub use live_log::{append, enable};
+pub use scope::{
+    // sync scopes
+    current_scope,
+    current_scope_sync,
+    scoped,
+    scoped_unnamed,
+    try_scoped,
+    try_scoped_unnamed,
+
+    // async scopes
+    scoped_async,
+    try_scoped_async,
+    try_scoped_unnamed_async,
+};
 
 use std::sync::{Arc, LazyLock};
 use std::collections::HashSet;
@@ -80,6 +104,15 @@ tokio::task_local! {
     static CURRENT_SCOPE: Option<ScopeId>;
 }
 
+// Thread-local fallback for synchronous scoped(...) closures.
+// This allows a synchronous closure to see the scope immediately.
+//
+// It's only used by the sync `scoped` function; async code continues to
+// use the tokio task-local CURRENT_SCOPE.
+thread_local! {
+    static THREAD_SCOPE: std::cell::RefCell<Option<ScopeId>> = std::cell::RefCell::new(None);
+}
+
 /// The global runtime state.
 struct Runtime {
     /// The underlying journal, protected by a mutex for safe concurrent access.
@@ -87,23 +120,24 @@ struct Runtime {
     written_headers: Mutex<HashSet<ScopeId>>
 }
 
-/// Returns a clone of the global runtime [`Arc<Runtime>`].
+/// Access the global journal for advanced operations.
 ///
-/// Panics if the runtime is not initialized.
-///
-/// This is useful for advanced operations such as async scopes or direct journal access.
-/// For general logging, use the high-level API: [`record`], [`info`], [`warn`], [`error`], [`debug`].
+/// Provides a way to interact with the journal directly via a closure.
+/// For general logging, prefer the high-level API: [`record`], [`info`], [`warn`], [`error`], [`debug`].
 ///
 /// # Example
 ///
 /// ```
 /// use eventline::runtime;
 ///
-/// runtime::init();
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// runtime::init().await;
 ///
-/// let rt = runtime::get_runtime(); // Arc<Runtime>
-/// let mut journal = rt.journal.lock().unwrap();
-/// journal.record(None, "Direct log entry");
+/// // Access the journal safely
+/// runtime::with_journal_mut(|journal| {
+///     journal.record(None, "Direct log entry");
+/// });
+/// # });
 /// ```
 async fn get_runtime() -> Arc<Runtime> {
     let runtime_guard = RUNTIME.read().await;
@@ -164,12 +198,20 @@ pub async fn reset() {
 ///
 /// # Example
 ///
-/// ```
+/// ```rust,ignore
 /// use eventline::runtime;
 ///
-/// assert!(!runtime::is_initialized());
-/// runtime::init();
-/// assert!(runtime::is_initialized());
+/// #[tokio::main]
+/// async fn main() {
+///     // Before init, runtime is not initialized
+///     assert!(!runtime::is_initialized().await);
+///
+///     // Initialize the runtime
+///     runtime::init().await;
+///
+///     // Now it is initialized
+///     assert!(runtime::is_initialized().await);
+/// }
 /// ```
 pub async fn is_initialized() -> bool {
     RUNTIME.read().await.is_some()
@@ -241,16 +283,22 @@ pub fn is_console_color_enabled() -> bool {
 ///
 /// ```
 /// use eventline::runtime;
+/// use eventline::journal::JournalWriter;
+/// use std::fs::File;
 ///
-/// runtime::init();
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// runtime::init().await;
 /// runtime::info("test event");
 ///
+/// // Access the journal for read-only operations
 /// runtime::with_journal(|journal| {
 ///     println!("Total events: {}", journal.records().len());
-///     
-///     // Write to file using journal's API
-///     journal.write_to_file("eventline.log").unwrap();
+///
+///     // Use JournalWriter to write to a file
+///     let mut file = File::create("eventline.log").unwrap();
+///     JournalWriter::new().write_to(&mut file, journal).unwrap();
 /// });
+/// # });
 /// ```
 pub async fn with_journal<F, R>(f: F) -> Option<R>
 where

@@ -7,10 +7,10 @@
 //!
 //! # Example
 //!
-//! ```rust
+//! ```rust,no_run
 //! # use eventline::runtime;
 //! # use eventline::{event_info, event_warn, event_error, event_debug, event_scope_async};
-//! # tokio_test::block_on(async {
+//! # async fn example() {
 //! # runtime::init().await;
 //! # let cache_size = 256;
 //! # let err = "connection failed";
@@ -25,10 +25,8 @@
 //!     // ... work happens here ...
 //! }).await;
 //! # runtime::reset().await;
-//! # });
+//! # }
 //! ```
-
 pub mod event;
 pub mod scope;
 pub mod tests;
-

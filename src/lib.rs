@@ -12,7 +12,7 @@
 //!
 //! - [`Journal`] - Pure, append-only event store
 //! - [`Scope`](scope::Scope) - Logical units of work with outcomes
-//! - [`Record`](record::Record) - Individual events and scope exits
+//! - [`Record`](journal::record::Record) - Individual events and scope exits
 //! - [`Filter`] - Composable filtering criteria
 //!
 //! Use this layer when you need:
@@ -36,34 +36,40 @@
 //!
 //! ## Using the Runtime (Recommended for Applications)
 //!
-//! ```rust
-//! # #[doc(hidden)] use eventline::{event_info, event_scope};
+//! ```rust,no_run
+//! # use eventline::{event_info, event_scope};
 //! # use eventline::runtime;
+//! # async fn example() {
 //!
 //! // Initialize once at startup
-//! runtime::init();
+//! runtime::init().await;
 //!
 //! // Log from anywhere
-//! event_info!("Application started");
+//! event_info!("Application started").await;
 //!
 //! // Create scoped contexts
 //! event_scope!("DatabaseMigration", {
-//!     event_info!("Applying migrations");
-//!     event_info!("Migration complete");
-//! });
+//!     event_info!("Applying migrations").await;
+//!     event_info!("Migration complete").await;
+//! }).await;
 //!
-//! // Write to file via journal access
+//! // Access the journal for rendering or custom output
 //! runtime::with_journal(|journal| {
-//!     journal.write_to_file("eventline.log").unwrap();
-//! });
-//! # runtime::reset();
+//!     // Use JournalWriter for file output
+//!     use eventline::journal::writer::JournalWriter;
+//!     let writer = JournalWriter::new();
+//!     // writer.write_to(&mut file, journal)?;
+//! }).await;
+//! # runtime::reset().await;
+//! # }
 //! ```
 //!
 //! ## Using the Core Journal (For Libraries)
 //!
 //! ```rust
-//! use eventline::Journal;
-//! use eventline::outcome::Outcome;
+//! use eventline::journal::Journal;
+//! use eventline::journal::outcome::Outcome;
+//! use eventline::journal::writer::JournalWriter;
 //!
 //! let mut journal = Journal::new();
 //!
@@ -71,9 +77,10 @@
 //! journal.record(Some(scope), "Processing request");
 //! journal.exit_scope(scope, Outcome::Success);
 //!
-//! journal.write_to_file("eventline.log").unwrap();
+//! // Use JournalWriter to output the journal
+//! let writer = JournalWriter::new();
+//! // writer.write_to(&mut std::fs::File::create("eventline.log")?, &journal)?;
 //! ```
-
 pub mod journal;
 pub mod macros;
 pub mod render;

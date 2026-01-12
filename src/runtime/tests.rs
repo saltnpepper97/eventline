@@ -81,8 +81,8 @@ mod tests {
 
             with_journal(|journal| {
                 assert_eq!(journal.scopes().len(), 1);
-                // Records: enter, info, exit = 3
-                assert_eq!(journal.records().len(), 3);
+                // Records: info, scope exit = 2
+                assert_eq!(journal.records().len(), 2);
             }).await;
         }).await;
     }
@@ -99,8 +99,8 @@ mod tests {
 
             with_journal(|journal| {
                 assert_eq!(journal.scopes().len(), 1);
-                // Records: enter, info, info, exit = 4
-                assert_eq!(journal.records().len(), 4);
+                // Records: info, info, scope exit = 3
+                assert_eq!(journal.records().len(), 3);
             }).await;
         }).await;
     }
@@ -143,7 +143,7 @@ mod tests {
 
             with_journal(|journal| {
                 assert_eq!(journal.scopes().len(), 2);
-                assert_eq!(journal.records().len(), 7); // enter/inner enter/info/info/inner exit/back info/exit
+                assert_eq!(journal.records().len(), 5); // enter/inner enter/info/info/inner exit/back info/exit
             }).await;
         }).await;
     }

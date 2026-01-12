@@ -19,11 +19,12 @@ impl<'a> ScopeGuard<'a> {
     /// Create a new guard for the given scope.
     ///
     /// # Example
+    ///
     /// ```
     /// use eventline::journal::Journal;
-    /// use eventline::scope::ScopeGuard; // <--- fixed path
-    /// use eventline::outcome::Outcome;
-    /// 
+    /// use eventline::scope::ScopeGuard; // correct path to ScopeGuard
+    /// use eventline::Outcome; // Outcome comes from the root of the crate
+    ///
     /// let mut journal = Journal::new();
     /// let scope_id = journal.enter_scope_unnamed(None);
     /// let mut guard = ScopeGuard::new(&mut journal, scope_id);
