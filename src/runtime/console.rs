@@ -98,7 +98,7 @@ pub fn print_event(kind: EventKind, message: &str) {
 /// Internal function - automatically called by `print_event` when color is enabled.
 #[cfg(feature = "colour")]
 fn print_event_colored(kind: EventKind, message: &str) {
-    use crate::colour::{RESET, RED, YELLOW, BLUE};
+    use crate::render::colour::{RESET, RED, YELLOW, BLUE};
     
     match kind {
         EventKind::Debug => println!("{}debug:{} {}", BLUE, RESET, message),
