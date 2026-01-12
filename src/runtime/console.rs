@@ -4,7 +4,7 @@
 //! enabling a "dual output" mode where events are both journaled and printed.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::event_kind::EventKind;
+use crate::journal::event_kind::EventKind;
 
 /// Global flag controlling console output.
 static CONSOLE_ENABLED: AtomicBool = AtomicBool::new(false);

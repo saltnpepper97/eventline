@@ -26,10 +26,11 @@
 //! let combined = failed_only.and(important);
 //! ```
 
-use crate::event_kind::EventKind;
+use super::EventKind;
 use crate::journal::Journal;
-use crate::outcome::Outcome;
-use crate::record::{Record, RecordKind};
+use super::Outcome;
+use super::ScopeId;
+use super::record::{Record, RecordKind};
 use crate::scope::Scope;
 
 /// A filter for journal scopes.
@@ -59,7 +60,7 @@ pub enum ScopeFilter {
     Named,
 
     /// Match scopes with a specific parent.
-    HasParent(crate::id::ScopeId),
+    HasParent(ScopeId),
 
     /// Match root scopes (no parent).
     IsRoot,
@@ -189,7 +190,7 @@ pub enum EventFilter {
     MessageContainsCaseSensitive(String),
 
     /// Match events in a specific scope.
-    InScope(crate::id::ScopeId),
+    InScope(ScopeId),
 
     /// Match events that are not in any scope.
     Unscoped,

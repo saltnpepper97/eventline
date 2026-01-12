@@ -74,20 +74,16 @@
 //! journal.write_to_file("eventline.log").unwrap();
 //! ```
 
-pub mod colour;
-pub mod event_kind;
-pub mod filter;
-pub mod id;
 pub mod journal;
-pub mod outcome;
-pub mod record;
-pub mod renderer;
+pub mod macros;
+pub mod render;
 pub mod runtime;
 pub mod scope;
 
-pub use event_kind::EventKind;
-pub use filter::{EventFilter, Filter, ScopeFilter};
+pub use journal::event_kind::EventKind;
+pub use journal::filter::{EventFilter, Filter, ScopeFilter};
 pub use journal::{Journal, JournalWriter};
-pub use outcome::Outcome;
-pub use renderer::{render_journal_tree, render_summary};
+pub use journal::outcome::Outcome;
+pub use journal::id::{RecordId, ScopeId};
+pub use render::{render_journal_tree, render_summary};
 pub use scope::scope_guard::ScopeGuard;

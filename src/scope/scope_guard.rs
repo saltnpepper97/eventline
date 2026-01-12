@@ -5,7 +5,7 @@
 //! the append-only invariant and guarantees that aborted scopes are recorded.
 
 use std::ops::Drop;
-use crate::{id::ScopeId, journal::Journal, outcome::Outcome};
+use crate::{ScopeId, journal::Journal, Outcome};
 
 /// RAII guard for a scope in the journal.
 /// Automatically records an exit when dropped.

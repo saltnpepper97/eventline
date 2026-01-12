@@ -3,13 +3,15 @@
 //! Color is enabled via a `color: bool` flag. No external crates are used.
 //! Filtering allows selective rendering of scopes and events based on criteria.
 
+pub mod colour;
+use colour::{RESET, RED, YELLOW, GREEN, BLUE};
+
 use crate::{
-    colour::{RESET, RED, YELLOW, GREEN, BLUE},
     journal::Journal,
-    record::RecordKind,
-    outcome::Outcome,
-    event_kind::EventKind,
-    filter::Filter,
+    journal::record::RecordKind,
+    journal::outcome::Outcome,
+    journal::event_kind::EventKind,
+    journal::filter::Filter,
 };
 
 /// Render the journal as a human-friendly tree with optional color and filtering.

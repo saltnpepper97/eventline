@@ -12,6 +12,12 @@
 //! each event. Outcomes for scopes are recorded via [`ScopeExit`](RecordKind::ScopeExit) records.
 
 pub mod buffer;
+pub mod event_kind;
+pub mod filter;
+pub mod id;
+pub mod outcome;
+pub mod record;
+pub mod tests;
 pub mod utils;
 pub mod writer;
 
@@ -21,10 +27,10 @@ use self::utils::current_millis;
 // Re-export JournalWriter so it's accessible as journal::JournalWriter
 pub use self::writer::JournalWriter;
 
-use crate::event_kind::EventKind;
-use crate::id::{RecordId, ScopeId};
-use crate::outcome::Outcome;
-use crate::record::{Record, RecordKind};
+pub use event_kind::EventKind;
+pub use id::{RecordId, ScopeId};
+pub use outcome::Outcome;
+pub use record::{Record, RecordKind};
 use crate::scope::Scope;
 
 /// The main journal structure for recording scopes and events.
@@ -330,7 +336,7 @@ impl Journal {
                 .iter()
                 .rev()
                 .find_map(|r| match &r.kind {
-                    crate::record::RecordKind::ScopeExit { outcome, .. } if r.scope == Some(id) => {
+                    RecordKind::ScopeExit { outcome, .. } if r.scope == Some(id) => {
                         Some(*outcome)
                     }
                     _ => None,
@@ -501,81 +507,4 @@ impl Default for Journal {
     }
 }
 
-#[cfg(test)]
-mod validation_tests {
-    use super::*;
-    use crate::event_kind::EventKind;
 
-    #[test]
-    #[should_panic(expected = "non-existent scope")]
-    #[cfg(debug_assertions)]
-    fn test_record_invalid_scope_panics_in_debug() {
-        let mut journal = Journal::new();
-        let fake_scope = ScopeId(999);
-
-        // Default informational event
-        journal.record(Some(fake_scope), "This should panic in debug");
-    }
-
-    #[test]
-    #[should_panic(expected = "non-existent scope")]
-    #[cfg(debug_assertions)]
-    fn test_record_with_kind_invalid_scope_panics_in_debug() {
-        let mut journal = Journal::new();
-        let fake_scope = ScopeId(999);
-
-        // Explicitly typed event
-        journal.record_with_kind(
-            Some(fake_scope),
-            EventKind::Error,
-            "This should also panic in debug",
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "non-existent scope")]
-    #[cfg(debug_assertions)]
-    fn test_exit_invalid_scope_panics_in_debug() {
-        let mut journal = Journal::new();
-        let fake_scope = ScopeId(999);
-
-        journal.exit_scope(fake_scope, Outcome::Success);
-    }
-
-    #[test]
-    fn test_valid_scope_operations() {
-        let mut journal = Journal::new();
-        let scope = journal.enter_scope_unnamed(None);
-
-        // Informational event via default API
-        journal.record(Some(scope), "valid info event");
-
-        // Explicit semantic events
-        journal.warn(Some(scope), "something unexpected happened");
-        journal.error(Some(scope), "something went wrong");
-
-        journal.exit_scope(scope, Outcome::Success);
-    }
-
-    #[test]
-    fn test_event_kind_is_preserved() {
-        let mut journal = Journal::new();
-        let scope = journal.enter_scope_unnamed(None);
-
-        journal.record_with_kind(
-            Some(scope),
-            EventKind::Warning,
-            "this is a warning",
-        );
-
-        let record = journal.records().last().unwrap();
-
-        match &record.kind {
-            RecordKind::Event { kind, message } => {
-                assert_eq!(*kind, EventKind::Warning);
-                assert_eq!(message, "this is a warning");
-            }
-            _ => panic!("Expected RecordKind::Event"),
-        }
-    }
-}

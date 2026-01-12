@@ -13,11 +13,11 @@
 use super::Journal;
 use super::utils::current_millis;
 
-use crate::event_kind::EventKind;
-use crate::id::{RecordId, ScopeId};
-use crate::outcome::Outcome;
-use crate::scope::Scope;
-use crate::record::{Record, RecordKind};
+use super::EventKind;
+use super::{RecordId, ScopeId};
+use super::outcome::Outcome;
+use super::Scope;
+use super::record::{Record, RecordKind};
 
 /// A buffered journal for batching writes before flushing to the main `Journal`.
 ///

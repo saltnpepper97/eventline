@@ -3,9 +3,9 @@
 //! A record can either be a user-defined event or a scope exit, capturing
 //! timing and outcome information. Records are always append-only and immutable.
 
-use crate::id::{RecordId, ScopeId};
-use crate::outcome::Outcome;
-use crate::event_kind::EventKind;
+use super::{RecordId, ScopeId};
+use super::Outcome;
+use super::EventKind;
 
 /// The type of a journal record.
 #[derive(Debug, Clone)]

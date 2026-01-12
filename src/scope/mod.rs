@@ -8,7 +8,7 @@ pub mod scope_guard;
 
 pub use scope_guard::ScopeGuard;
 
-use crate::id::ScopeId;
+use crate::journal::id::ScopeId;
 
 /// A journal scope, representing a logical unit of work.
 #[derive(Debug, Clone)]

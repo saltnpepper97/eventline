@@ -2,10 +2,10 @@ use std::io::Write;
 use super::Journal;
 use super::utils::millis_to_local;
 
-use crate::event_kind::EventKind;
-use crate::id::ScopeId;
-use crate::outcome::Outcome;
-use crate::record::{Record, RecordKind};
+use super::EventKind;
+use super::ScopeId;
+use super::Outcome;
+use super::{Record, RecordKind};
 
 /// Writer for rendering journals to different output sinks.
 ///
