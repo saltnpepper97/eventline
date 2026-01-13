@@ -83,7 +83,6 @@ pub use scope::{
 };
 
 use std::sync::{Arc, LazyLock};
-use std::collections::HashSet;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::Outcome;
@@ -122,7 +121,6 @@ thread_local! {
 struct Runtime {
     /// The underlying journal, protected by a mutex for safe concurrent access.
     journal: Arc<Mutex<Journal>>,
-    written_headers: Mutex<HashSet<ScopeId>>
 }
 
 /// Access the global journal for advanced operations.
@@ -171,7 +169,6 @@ pub async fn init() {
     let mut guard = RUNTIME.write().await;
     *guard = Some(Arc::new(Runtime {
         journal: Arc::new(Mutex::new(Journal::new())),
-        written_headers: Mutex::new(HashSet::new()),
     }));
 }
 

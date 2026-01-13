@@ -1,4 +1,4 @@
-use super::{console, RUNTIME, live_log, log_level};
+use super::{console, RUNTIME, log_level};
 
 use crate::core::event_kind::EventKind;
 

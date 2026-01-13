@@ -113,8 +113,8 @@ pub fn print_event(kind: EventKind, message: &str) {
 #[cfg(feature = "colour")]
 fn print_event_colored(kind: EventKind, message: &str) {
     match kind {
-        EventKind::Debug => println!("{}debug: {} {}", BLUE, RESET, message),
-        EventKind::Info  => println!("{}info: {} {}", GREEN, RESET, message),
+        EventKind::Debug => println!("{}debug:  {} {}", BLUE, RESET, message),
+        EventKind::Info  => println!("{}info:   {} {}", GREEN, RESET, message),
         EventKind::Warning => println!("{}warning:{} {}", YELLOW, RESET, message),
         EventKind::Error => eprintln!("{}error: {} {}", RED, RESET, message),
     }
