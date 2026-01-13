@@ -199,7 +199,7 @@ impl JournalWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::outcome::Outcome;
+    use crate::Outcome;
 
     #[test]
     fn test_journal_writer_custom_bullet() {

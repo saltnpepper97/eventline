@@ -2,9 +2,8 @@ use std::future::Future;
 use futures::FutureExt;
 
 use super::{get_runtime, RUNTIME, CURRENT_SCOPE, THREAD_SCOPE};
-use crate::journal::id::ScopeId;
+use crate::ScopeId;
 use crate::Outcome;
-use crate::scope::AsyncScopeGuard;
 
 /// Get the current scope for this thread.
 ///
@@ -103,16 +102,62 @@ where
     });
 
     // Exit scope in the journal
-    let mut journal = rt.journal.lock().await;
+    let outcome = match catch_result {
+        Ok(_) => Outcome::Success,
+        Err(_) => Outcome::Aborted,
+    };
+
+    {
+        let mut journal = rt.journal.lock().await;
+        journal.exit_scope(scope_id, outcome);
+        
+        // Write scope header + all events to live log when scope exits
+        if let Some(scope_ref) = journal.get_scope(scope_id) {
+            use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
+            use super::live_log;
+            use crate::RecordKind;
+            
+            let config = RenderConfig {
+                color: false,
+                timestamps: true,
+                bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                indent_size: 2,
+            };
+            
+            // Write scope header first
+            let rendered = render_scope_header(&journal, scope_ref, &config);
+            live_log::append(&rendered.header);
+            
+            // Write all events for this scope
+            let scope_depth = journal.scope_path(Some(scope_id)).len();
+            let indent_level = scope_depth.saturating_sub(1) + 1;
+            
+            for record in journal.records() {
+                if record.scope == Some(scope_id) {
+                    if matches!(record.kind, RecordKind::Event { .. }) {
+                        let event_config = RenderConfig {
+                            color: false,
+                            timestamps: false,
+                            bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                            indent_size: 2,
+                        };
+                        
+                        if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
+                            live_log::append(&rendered_event.main);
+                            
+                            if let Some(detail) = rendered_event.detail {
+                                live_log::append(&detail);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     match catch_result {
-        Ok(v) => {
-            journal.exit_scope(scope_id, Outcome::Success);
-            v
-        }
-        Err(panic) => {
-            journal.exit_scope(scope_id, Outcome::Aborted);
-            std::panic::resume_unwind(panic);
-        }
+        Ok(v) => v,
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
@@ -162,26 +207,72 @@ where
         journal.enter_scope(parent, name)
     };
 
-    let guard = AsyncScopeGuard::new(rt.journal.clone(), scope_id);
-
-    CURRENT_SCOPE
+    let result = CURRENT_SCOPE
         .scope(Some(scope_id), async move {
-            let result = std::panic::AssertUnwindSafe(f())
+            std::panic::AssertUnwindSafe(f())
                 .catch_unwind()
-                .await;
+                .await
+        })
+        .await;
 
-            match result {
-                Ok(value) => {
-                    guard.exit(Outcome::Success).await;
-                    value
-                }
-                Err(panic) => {
-                    guard.exit(Outcome::Aborted).await;
-                    std::panic::resume_unwind(panic);
+    // Exit scope AFTER the async block completes
+    let outcome = match result {
+        Ok(_) => Outcome::Success,
+        Err(_) => Outcome::Aborted,
+    };
+
+    {
+        let mut journal = rt.journal.lock().await;
+        journal.exit_scope(scope_id, outcome);
+        
+        // Write scope header + all events to live log when scope exits
+        if let Some(scope_ref) = journal.get_scope(scope_id) {
+            use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
+            use super::live_log;
+            use crate::RecordKind;
+            
+            let config = RenderConfig {
+                color: false,
+                timestamps: true,
+                bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                indent_size: 2,
+            };
+            
+            // Write scope header first
+            let rendered = render_scope_header(&journal, scope_ref, &config);
+            live_log::append(&rendered.header);
+            
+            // Write all events for this scope
+            let scope_depth = journal.scope_path(Some(scope_id)).len();
+            let indent_level = scope_depth.saturating_sub(1) + 1;
+            
+            for record in journal.records() {
+                if record.scope == Some(scope_id) {
+                    if matches!(record.kind, RecordKind::Event { .. }) {
+                        let event_config = RenderConfig {
+                            color: false,
+                            timestamps: false,
+                            bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                            indent_size: 2,
+                        };
+                        
+                        if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
+                            live_log::append(&rendered_event.main);
+                            
+                            if let Some(detail) = rendered_event.detail {
+                                live_log::append(&detail);
+                            }
+                        }
+                    }
                 }
             }
-        })
-        .await
+        }
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// Execute a closure within a new scope, without panicking if runtime is uninitialized.
@@ -214,25 +305,71 @@ where
     };
 
     // Run the closure inside CURRENT_SCOPE
-    CURRENT_SCOPE
+    let result = CURRENT_SCOPE
         .scope(Some(scope_id), async move {
             // Execute closure, catching panics
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        })
+        .await;
 
-            // Exit scope in journal
-            let mut journal = rt.journal.lock().await;
-            match result {
-                Ok(value) => {
-                    journal.exit_scope(scope_id, Outcome::Success);
-                    value
-                }
-                Err(panic) => {
-                    journal.exit_scope(scope_id, Outcome::Aborted);
-                    std::panic::resume_unwind(panic);
+    // Exit scope in journal
+    let outcome = match result {
+        Ok(_) => Outcome::Success,
+        Err(_) => Outcome::Aborted,
+    };
+
+    {
+        let mut journal = rt.journal.lock().await;
+        journal.exit_scope(scope_id, outcome);
+        
+        // Write scope header + all events to live log when scope exits
+        if let Some(scope_ref) = journal.get_scope(scope_id) {
+            use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
+            use super::live_log;
+            use crate::RecordKind;
+            
+            let config = RenderConfig {
+                color: false,
+                timestamps: true,
+                bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                indent_size: 2,
+            };
+            
+            // Write scope header first
+            let rendered = render_scope_header(&journal, scope_ref, &config);
+            live_log::append(&rendered.header);
+            
+            // Write all events for this scope
+            let scope_depth = journal.scope_path(Some(scope_id)).len();
+            let indent_level = scope_depth.saturating_sub(1) + 1;
+            
+            for record in journal.records() {
+                if record.scope == Some(scope_id) {
+                    if matches!(record.kind, RecordKind::Event { .. }) {
+                        let event_config = RenderConfig {
+                            color: false,
+                            timestamps: false,
+                            bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                            indent_size: 2,
+                        };
+                        
+                        if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
+                            live_log::append(&rendered_event.main);
+                            
+                            if let Some(detail) = rendered_event.detail {
+                                live_log::append(&detail);
+                            }
+                        }
+                    }
                 }
             }
-        })
-        .await
+        }
+    }
+
+    match result {
+        Ok(value) => value,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 /// Execute a closure within a new unnamed scope, without panicking if runtime is uninitialized.
@@ -294,23 +431,70 @@ where
         journal.enter_scope(parent, name)
     };
 
-    let guard = AsyncScopeGuard::new(rt.journal.clone(), scope_id);
-
-    CURRENT_SCOPE
+    let result = CURRENT_SCOPE
         .scope(Some(scope_id), async move {
-            let result = std::panic::AssertUnwindSafe(f()).catch_unwind().await;
-            match result {
-                Ok(v) => {
-                    guard.exit(Outcome::Success).await;
-                    v
-                }
-                Err(p) => {
-                    // Aborted will be recorded by guard drop
-                    std::panic::resume_unwind(p);
+            std::panic::AssertUnwindSafe(f()).catch_unwind().await
+        })
+        .await;
+
+    // Exit scope AFTER the async block completes
+    let outcome = match result {
+        Ok(_) => Outcome::Success,
+        Err(_) => Outcome::Aborted,
+    };
+
+    {
+        let mut journal = rt.journal.lock().await;
+        journal.exit_scope(scope_id, outcome);
+        
+        // Write scope header + all events to live log when scope exits
+        if let Some(scope_ref) = journal.get_scope(scope_id) {
+            use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
+            use super::live_log;
+            use crate::RecordKind;
+            
+            let config = RenderConfig {
+                color: false,
+                timestamps: true,
+                bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                indent_size: 2,
+            };
+            
+            // Write scope header first
+            let rendered = render_scope_header(&journal, scope_ref, &config);
+            live_log::append(&rendered.header);
+            
+            // Write all events for this scope
+            let scope_depth = journal.scope_path(Some(scope_id)).len();
+            let indent_level = scope_depth.saturating_sub(1) + 1;
+            
+            for record in journal.records() {
+                if record.scope == Some(scope_id) {
+                    if matches!(record.kind, RecordKind::Event { .. }) {
+                        let event_config = RenderConfig {
+                            color: false,
+                            timestamps: false,
+                            bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                            indent_size: 2,
+                        };
+                        
+                        if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
+                            live_log::append(&rendered_event.main);
+                            
+                            if let Some(detail) = rendered_event.detail {
+                                live_log::append(&detail);
+                            }
+                        }
+                    }
                 }
             }
-        })
-        .await
+        }
+    }
+
+    match result {
+        Ok(v) => v,
+        Err(p) => std::panic::resume_unwind(p),
+    }
 }
 
 /// Execute an async closure within a new unnamed scope, without panicking if the runtime is uninitialized.

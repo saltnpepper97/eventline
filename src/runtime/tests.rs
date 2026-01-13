@@ -7,8 +7,8 @@ mod tests {
         try_scoped_unnamed, try_scoped_unnamed_async, current_scope
     };
 
-    use crate::EventKind;
-    use crate::journal::outcome::Outcome;
+    use crate::core::EventKind;
+    use crate::Outcome;
     use serial_test::serial;
 
     /// Helper to ensure clean state between tests.
@@ -166,7 +166,7 @@ mod tests {
         with_journal(|journal| {
             let exit_record = journal.records().last().unwrap();
             match &exit_record.kind {
-                crate::journal::record::RecordKind::ScopeExit { outcome, .. } => {
+                crate::RecordKind::ScopeExit { outcome, .. } => {
                     assert_eq!(*outcome, Outcome::Aborted);
                 }
                 _ => panic!("Expected ScopeExit record"),

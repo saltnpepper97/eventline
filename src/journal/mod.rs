@@ -13,9 +13,6 @@
 
 pub mod buffer;
 pub mod filter;
-pub mod id;
-pub mod outcome;
-pub mod record;
 pub mod tests;
 pub mod utils;
 pub mod writer;
@@ -26,10 +23,11 @@ use self::utils::current_millis;
 // Re-export JournalWriter so it's accessible as journal::JournalWriter
 pub use self::writer::JournalWriter;
 
-pub use id::{RecordId, ScopeId};
-pub use outcome::Outcome;
-pub use record::{Record, RecordKind};
-use crate::scope::Scope;
+use crate::Outcome;
+use crate::{Record, RecordKind};
+use crate::EventKind;
+use crate::{RecordId, ScopeId};
+use crate::Scope;
 
 /// The main journal structure for recording scopes and events.
 ///
@@ -46,7 +44,7 @@ impl Journal {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     /// 
     /// let journal = Journal::new();
     /// assert!(journal.scopes().is_empty());
@@ -66,7 +64,7 @@ impl Journal {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     /// 
     /// let mut journal = Journal::new();
     /// let buffer = journal.create_buffer();
@@ -85,7 +83,7 @@ impl Journal {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     /// 
     /// let mut journal = Journal::new();
     /// let mut buffer = journal.create_buffer();
@@ -162,7 +160,7 @@ impl Journal {
     /// ## Example
     ///
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     ///
     /// let mut journal = Journal::new();
     ///
@@ -206,7 +204,7 @@ impl Journal {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     /// 
     /// let mut journal = Journal::new();
     /// let scope_id = journal.enter_scope(None, Some("my-scope"));
@@ -244,8 +242,8 @@ impl Journal {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
-    /// use eventline::journal::outcome::Outcome;
+    /// use eventline::Journal;
+    /// use eventline::Outcome;
     /// 
     /// let mut journal = Journal::new();
     /// let scope_id = journal.enter_scope_unnamed(None);
@@ -320,7 +318,7 @@ impl Journal {
     /// # Example
     ///
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     /// let mut journal = Journal::new();
     /// let scope = journal.enter_scope_unnamed(None);
     /// assert!(journal.scope_elapsed(Some(scope)).is_some());
@@ -336,8 +334,8 @@ impl Journal {
     /// # Example
     ///
     /// ```
-    /// use eventline::journal::Journal;
-    /// use eventline::journal::outcome::Outcome;
+    /// use eventline::Journal;
+    /// use eventline::Outcome;
     ///
     /// let mut journal = Journal::new();
     /// let scope = journal.enter_scope_unnamed(None);
@@ -373,8 +371,8 @@ impl Journal {
     /// # Example
     ///
     /// ```
-    /// use eventline::journal::Journal;
-    /// use eventline::journal::outcome::Outcome;
+    /// use eventline::Journal;
+    /// use eventline::Outcome;
     ///
     /// let mut journal = Journal::new();
     /// let scope = journal.enter_scope_unnamed(None);
@@ -412,7 +410,7 @@ impl Journal {
     /// ## Example
     ///
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     ///
     /// let mut journal = Journal::new();
     /// journal.record(None, "Application starting");
@@ -455,8 +453,8 @@ impl Journal {
     /// ## Example
     ///
     /// ```
-    /// use eventline::journal::Journal;
-    /// use eventline::journal::event_kind::EventKind;
+    /// use eventline::Journal;
+    /// use eventline::EventKind;
     ///
     /// let mut journal = Journal::new();
     /// let scope = journal.enter_scope_unnamed(None);
@@ -496,7 +494,7 @@ impl Journal {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     /// 
     /// let journal = Journal::new();
     /// let scopes = journal.scopes();
@@ -510,7 +508,7 @@ impl Journal {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
+    /// use eventline::Journal;
     /// 
     /// let journal = Journal::new();
     /// let records = journal.records();

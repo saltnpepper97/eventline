@@ -30,15 +30,15 @@
 //! Arrows exist to show *why* or *detail*, not to echo *what*.
 
 use crate::{
-    journal::Journal,
-    journal::record::RecordKind,
-    journal::outcome::Outcome,
-    journal::event_kind::EventKind,
+    EventKind,
+    Journal,
+    RecordKind,
+    Outcome,
     journal::utils::millis_to_local,
 };
 
 #[cfg(test)]
-use crate::journal::id::RecordId;
+use crate::RecordId;
 
 #[cfg(feature = "colour")]
 use crate::render::colour::{RESET, RED, YELLOW, GREEN, BLUE};
@@ -106,7 +106,7 @@ impl RenderConfig {
 /// Format: `[HH:MM:SS.mmm] Scope name (id=N) → Outcome (Nms)`
 pub fn render_scope_header(
     journal: &Journal,
-    scope: &crate::scope::Scope,
+    scope: &crate::Scope,
     config: &RenderConfig,
 ) -> RenderedScope {
     // Find the scope exit record
@@ -188,7 +188,7 @@ pub fn render_scope_header(
 /// structured detail to add. The current implementation doesn't support structured
 /// details yet, so arrows are omitted by design.
 pub fn render_event(
-    record: &crate::journal::record::Record,
+    record: &crate::Record,
     config: &RenderConfig,
     indent_level: usize,
 ) -> Option<RenderedEvent> {
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn test_event_format() {
         let _journal = Journal::new();
-        let record = crate::journal::record::Record {
+        let record = crate::Record {
             id: RecordId(1),
             scope: None,
             kind: RecordKind::Event {
@@ -291,7 +291,7 @@ mod tests {
     fn test_no_arrow_duplication() {
         // Verify that we don't create arrow lines that just repeat the message
         let _journal = Journal::new();
-        let record = crate::journal::record::Record {
+        let record = crate::Record {
             id: RecordId(1),
             scope: None,
             kind: RecordKind::Event {

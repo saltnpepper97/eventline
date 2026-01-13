@@ -1,7 +1,6 @@
 use super::{console, RUNTIME, live_log, log_level};
 
-use crate::journal::event_kind::EventKind;
-use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
+use crate::core::event_kind::EventKind;
 
 /// Record an event with the specified kind and message.
 ///
@@ -9,7 +8,7 @@ use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
 /// 1. Checks the current log level; skips if the event kind is below the threshold.
 /// 2. Records the event in the journal (thread-safe, recovers poisoned mutexes).
 /// 3. Prints the event to the console if console output is enabled (simple format).
-/// 4. Appends the event to the live log file if live logging is enabled (using canonical format).
+/// 4. Buffers the event - it will be written to live log when the scope exits.
 ///
 /// The event is automatically associated with the current thread's active scope, if any.
 ///
@@ -18,11 +17,14 @@ use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
 /// - Printing full scope headers for each event would be too verbose
 /// - Live log file gets the full canonical format with scope headers
 ///
+/// **Live log output is buffered per scope** - events are written only when their
+/// scope exits, so the scope header can show the final outcome and duration.
+///
 /// # Examples
 ///
 /// ```
 /// use eventline::runtime;
-/// use eventline::EventKind;
+/// use eventline::core::EventKind;
 ///
 /// runtime::init();
 /// runtime::enable_console_output(true);
@@ -46,57 +48,12 @@ pub async fn record(kind: EventKind, message: impl Into<String>) {
         let mut journal = rt.journal.lock().await;
         journal.record_with_kind(scope, kind, &message);
 
-        // --- Live log (using canonical format) ---
-        if let Some(current_scope_id) = journal.scopes().iter().rev()
-            .find(|s| s.exited_at.is_none())
-            .map(|s| s.id)
-        {
-            let mut headers = rt.written_headers.lock().await;
-            
-            // Write scope header if not already written
-            if !headers.contains(&current_scope_id) {
-                if let Some(scope_ref) = journal.scopes().iter().find(|s| s.id == current_scope_id) {
-                    // Use canonical rendering for scope header
-                    let config = RenderConfig {
-                        color: false,  // Live log files should not have color codes
-                        timestamps: true,
-                        bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
-                        indent_size: 2,
-                    };
-                    
-                    let rendered = render_scope_header(&journal, scope_ref, &config);
-                    live_log::append(&rendered.header);
-                    headers.insert(current_scope_id);
-                }
-            }
-
-            // Render event using canonical format
-            let scope_depth = journal.scope_path(Some(current_scope_id)).len();
-            let indent_level = scope_depth.saturating_sub(1) + 1; // +1 for event indent within scope
-            
-            // Create a Record for rendering
-            if let Some(last_record) = journal.records().iter().rev().next() {
-                let config = RenderConfig {
-                    color: false,
-                    timestamps: false,
-                    bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
-                    indent_size: 2,
-                };
-                
-                if let Some(rendered) = render_event(last_record, &config, indent_level) {
-                    live_log::append(&rendered.main);
-                    
-                    // Add detail line if present (arrow rule: only if it adds information)
-                    if let Some(detail) = rendered.detail {
-                        live_log::append(&detail);
-                    }
-                }
-            }
-        }
-
+        // --- Live log buffering ---
+        // Events are NOT written here - they're buffered in the journal
+        // and will be written by runtime/scope.rs when the scope exits
+        
         // --- Console output (simple format - no scope headers) ---
-        // Console stays simple because most scopes are single-event temporary scopes
-        // from event_*_scoped! macros. Full canonical format goes to live log.
+        // Console stays simple and immediate
         if console::is_console_enabled() {
             let _ = std::panic::catch_unwind(|| {
                 console::print_event(kind, &message);

@@ -13,11 +13,11 @@
 use super::Journal;
 use super::utils::current_millis;
 
-use super::EventKind;
-use super::{RecordId, ScopeId};
-use super::outcome::Outcome;
-use super::Scope;
-use super::record::{Record, RecordKind};
+use crate::EventKind;
+use crate::{RecordId, ScopeId};
+use crate::Outcome;
+use crate::Scope;
+use crate::{Record, RecordKind};
 
 /// A buffered journal for batching writes before flushing to the main `Journal`.
 ///
@@ -30,9 +30,9 @@ use super::record::{Record, RecordKind};
 /// ## Usage
 ///
 /// ```rust
-/// use eventline::journal::Journal;
-/// use eventline::journal::buffer::JournalBuffer;
-/// use eventline::journal::outcome::Outcome;
+/// use eventline::Journal;
+/// use eventline::JournalBuffer;
+/// use eventline::Outcome;
 /// 
 /// let mut journal = Journal::new();
 /// let mut buffer = journal.create_buffer();
@@ -55,7 +55,7 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::buffer::JournalBuffer;
+    /// use eventline::JournalBuffer;
     /// 
     /// let buffer = JournalBuffer::new();
     /// assert!(buffer.is_empty());
@@ -74,7 +74,7 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::buffer::JournalBuffer;
+    /// use eventline::JournalBuffer;
     /// 
     /// let mut buffer = JournalBuffer::new();
     /// let scope_id = buffer.enter_scope(None, None);
@@ -100,8 +100,8 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::buffer::JournalBuffer;
-    /// use eventline::journal::outcome::Outcome;
+    /// use eventline::JournalBuffer;
+    /// use eventline::Outcome;
     /// 
     /// let mut buffer = JournalBuffer::new();
     /// let scope_id = buffer.enter_scope(None, None);
@@ -133,7 +133,7 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::buffer::JournalBuffer;
+    /// use eventline::JournalBuffer;
     /// 
     /// let mut buffer = JournalBuffer::new();
     /// let scope_id = buffer.enter_scope(None, None);
@@ -150,8 +150,8 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::buffer::JournalBuffer;
-    /// use eventline::journal::event_kind::EventKind;
+    /// use eventline::JournalBuffer;
+    /// use eventline::EventKind;
     /// 
     /// let mut buffer = JournalBuffer::new();
     /// let scope = buffer.enter_scope(None, None);
@@ -184,8 +184,8 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::Journal;
-    /// use eventline::journal::buffer::JournalBuffer;
+    /// use eventline::Journal;
+    /// use eventline::JournalBuffer;
     /// 
     /// let mut journal = Journal::new();
     /// let mut buffer = JournalBuffer::new();
@@ -213,7 +213,7 @@ impl JournalBuffer {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::buffer::JournalBuffer;
+    /// use eventline::JournalBuffer;
     /// 
     /// let buffer = JournalBuffer::new();
     /// assert!(buffer.is_empty());

@@ -67,9 +67,9 @@
 //! ## Using the Core Journal (For Libraries)
 //!
 //! ```rust
-//! use eventline::journal::Journal;
-//! use eventline::journal::outcome::Outcome;
-//! use eventline::journal::writer::JournalWriter;
+//! use eventline::Journal;
+//! use eventline::Outcome;
+//! use eventline::JournalWriter;
 //!
 //! let mut journal = Journal::new();
 //!
@@ -86,11 +86,13 @@ pub mod journal;
 pub mod macros;
 pub mod render;
 pub mod runtime;
-pub mod scope;
 
 pub use journal::filter::{EventFilter, Filter, ScopeFilter};
 pub use journal::{Journal, JournalWriter};
-pub use journal::outcome::Outcome;
-pub use journal::id::{RecordId, ScopeId};
+pub use journal::buffer::JournalBuffer;
+pub use core::Outcome;
+pub use core::EventKind;
+pub use core::{RecordId, ScopeId};
 pub use render::{render_journal_tree, render_summary};
-pub use scope::scope_guard::ScopeGuard;
+pub use core::{Record, RecordKind};
+pub use core::{Scope, ScopeGuard};

@@ -5,13 +5,14 @@
 
 pub mod colour;
 pub mod canonical;
+pub mod console;
 
 use canonical::{render_scope_header, render_event, RenderConfig};
 use crate::{
-    journal::Journal,
-    journal::record::RecordKind,
-    journal::outcome::Outcome,
-    journal::filter::Filter,
+    Journal,
+    RecordKind,
+    Outcome,
+    Filter,
 };
 
 /// Render the journal as a human-friendly tree with optional color and filtering.
@@ -28,9 +29,9 @@ use crate::{
 ///
 /// # Example
 /// ```
-/// use eventline::journal::Journal;
-/// use eventline::journal::filter::{Filter, ScopeFilter};
-/// use eventline::journal::outcome::Outcome;
+/// use eventline::Journal;
+/// use eventline::{Filter, ScopeFilter};
+/// use eventline::Outcome;
 ///
 /// let mut journal = Journal::new();
 /// let scope = journal.enter_scope_unnamed(None);
@@ -67,7 +68,7 @@ pub fn render_journal_tree(journal: &Journal, color: bool, filter: Option<&Filte
 /// Render a single scope with its events using canonical format.
 fn render_scope_tree(
     journal: &Journal,
-    scope: &crate::scope::Scope,
+    scope: &crate::Scope,
     config: &RenderConfig,
     filter: &Filter,
 ) {

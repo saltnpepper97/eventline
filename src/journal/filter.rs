@@ -9,9 +9,9 @@
 //! # Examples
 //!
 //! ```
-//! use eventline::journal::filter::{Filter, ScopeFilter, EventFilter};
-//! use eventline::journal::outcome::Outcome;
-//! use eventline::journal::event_kind::EventKind;
+//! use eventline::{Filter, ScopeFilter, EventFilter};
+//! use eventline::Outcome;
+//! use eventline::EventKind;
 //!
 //! // Filter for failed scopes
 //! let failed_only = Filter::scope(ScopeFilter::Outcome(Outcome::Failure));
@@ -27,11 +27,11 @@
 //! ```
 
 use super::EventKind;
-use crate::journal::Journal;
+use crate::Journal;
 use super::Outcome;
 use super::ScopeId;
-use super::record::{Record, RecordKind};
-use crate::scope::Scope;
+use super::{Record, RecordKind};
+use crate::Scope;
 
 /// A filter for journal scopes.
 #[derive(Debug, Clone)]
@@ -92,8 +92,8 @@ impl ScopeFilter {
     ///
     /// # Example
     /// ```
-    /// use eventline::journal::filter::ScopeFilter;
-    /// use eventline::journal::outcome::Outcome;
+    /// use eventline::ScopeFilter;
+    /// use eventline::Outcome;
     ///
     /// let filter = ScopeFilter::Outcome(Outcome::Failure)
     ///     .and(ScopeFilter::MinDepth(1));

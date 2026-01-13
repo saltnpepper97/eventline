@@ -9,7 +9,7 @@
 //! Unscoped logs remain simple (no headers). Scoped logs use full canonical format.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::journal::event_kind::EventKind;
+use crate::core::event_kind::EventKind;
 
 #[cfg(feature = "colour")]
 use crate::render::colour::{RESET, GREEN, RED, YELLOW, BLUE};

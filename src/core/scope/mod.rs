@@ -6,9 +6,9 @@
 
 pub mod scope_guard;
 
-pub use scope_guard::{ScopeGuard, AsyncScopeGuard};
+pub use scope_guard::ScopeGuard;
 
-use crate::journal::id::ScopeId;
+use crate::ScopeId;
 
 /// A journal scope, representing a logical unit of work.
 #[derive(Debug, Clone)]

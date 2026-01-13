@@ -59,14 +59,12 @@
 //! }
 //! ```
 
-pub mod console;
 pub mod event;
 pub mod live_log;
 pub mod log_level;
 pub mod scope;
 pub mod tests;
 
-pub use console::print_event;
 pub use event::{record, info, warn, error, debug};
 pub use live_log::{append, enable};
 pub use scope::{
@@ -89,8 +87,9 @@ use std::collections::HashSet;
 use tokio::sync::{Mutex, RwLock};
 
 use crate::Outcome;
-use crate::journal::id::ScopeId;
-use crate::journal::Journal;
+use crate::ScopeId;
+use crate::Journal;
+use crate::render::console;
 
 /// Global runtime singleton.
 ///
