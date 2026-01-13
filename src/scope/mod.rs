@@ -6,7 +6,7 @@
 
 pub mod scope_guard;
 
-pub use scope_guard::ScopeGuard;
+pub use scope_guard::{ScopeGuard, AsyncScopeGuard};
 
 use crate::journal::id::ScopeId;
 

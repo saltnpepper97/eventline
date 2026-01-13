@@ -88,6 +88,7 @@ use std::sync::{Arc, LazyLock};
 use std::collections::HashSet;
 use tokio::sync::{Mutex, RwLock};
 
+use crate::Outcome;
 use crate::journal::id::ScopeId;
 use crate::journal::Journal;
 
@@ -104,6 +105,11 @@ tokio::task_local! {
     static CURRENT_SCOPE: Option<ScopeId>;
 }
 
+
+tokio::task_local! {
+    pub static PENDING_OUTCOME: std::sync::Arc<tokio::sync::Mutex<Option<Outcome>>>;
+}
+
 // Thread-local fallback for synchronous scoped(...) closures.
 // This allows a synchronous closure to see the scope immediately.
 //
@@ -116,7 +122,7 @@ thread_local! {
 /// The global runtime state.
 struct Runtime {
     /// The underlying journal, protected by a mutex for safe concurrent access.
-    journal: Mutex<Journal>,
+    journal: Arc<Mutex<Journal>>,
     written_headers: Mutex<HashSet<ScopeId>>
 }
 
@@ -165,7 +171,7 @@ async fn get_runtime() -> Arc<Runtime> {
 pub async fn init() {
     let mut guard = RUNTIME.write().await;
     *guard = Some(Arc::new(Runtime {
-        journal: Mutex::new(Journal::new()),
+        journal: Arc::new(Mutex::new(Journal::new())),
         written_headers: Mutex::new(HashSet::new()),
     }));
 }

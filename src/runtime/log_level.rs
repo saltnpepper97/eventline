@@ -31,12 +31,12 @@ pub fn get_log_level() -> LogLevel {
 }
 
 /// Check whether a given `EventKind` should be logged at the current level.
-pub fn log_enabled(kind: crate::EventKind) -> bool {
+pub fn log_enabled(kind: crate::core::EventKind) -> bool {
     let level = get_log_level();
     match kind {
-        crate::EventKind::Debug => level <= LogLevel::Debug,
-        crate::EventKind::Info => level <= LogLevel::Info,
-        crate::EventKind::Warning => level <= LogLevel::Warning,
-        crate::EventKind::Error => level <= LogLevel::Error,
+        crate::core::EventKind::Debug => level <= LogLevel::Debug,
+        crate::core::EventKind::Info => level <= LogLevel::Info,
+        crate::core::EventKind::Warning => level <= LogLevel::Warning,
+        crate::core::EventKind::Error => level <= LogLevel::Error,
     }
 }

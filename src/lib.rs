@@ -81,13 +81,13 @@
 //! let writer = JournalWriter::new();
 //! // writer.write_to(&mut std::fs::File::create("eventline.log")?, &journal)?;
 //! ```
+pub mod core;
 pub mod journal;
 pub mod macros;
 pub mod render;
 pub mod runtime;
 pub mod scope;
 
-pub use journal::event_kind::EventKind;
 pub use journal::filter::{EventFilter, Filter, ScopeFilter};
 pub use journal::{Journal, JournalWriter};
 pub use journal::outcome::Outcome;

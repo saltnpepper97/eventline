@@ -18,9 +18,13 @@
 #[macro_export]
 macro_rules! event_info_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), move || async {
-            $crate::runtime::info(format!($($arg)*)).await;
-        })
+        {
+            // Move everything into the closure
+            let scope_owned = $scope.to_string();
+            $crate::runtime::scoped_async(Some(scope_owned), move || async move {
+                $crate::runtime::info(format!($($arg)*)).await;
+            })
+        }
     };
 }
 
@@ -40,9 +44,12 @@ macro_rules! event_info_scoped {
 #[macro_export]
 macro_rules! event_warn_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), move || async {
-            $crate::runtime::warn(format!($($arg)*)).await;
-        })
+        {
+            let scope_owned = $scope.to_string();
+            $crate::runtime::scoped_async(Some(scope_owned), move || async move {
+                $crate::runtime::warn(format!($($arg)*)).await;
+            })
+        }
     };
 }
 
@@ -62,9 +69,12 @@ macro_rules! event_warn_scoped {
 #[macro_export]
 macro_rules! event_error_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), move || async {
-            $crate::runtime::error(format!($($arg)*)).await;
-        })
+        {
+            let scope_owned = $scope.to_string();
+            $crate::runtime::scoped_async(Some(scope_owned), move || async move {
+                $crate::runtime::error(format!($($arg)*)).await;
+            })
+        }
     };
 }
 
@@ -84,9 +94,11 @@ macro_rules! event_error_scoped {
 #[macro_export]
 macro_rules! event_debug_scoped {
     ($scope:expr, $($arg:tt)*) => {
-        $crate::runtime::scoped_async(Some($scope), move || async {
-            $crate::runtime::debug(format!($($arg)*)).await;
-        })
+        {
+            let scope_owned = $scope.to_string();
+            $crate::runtime::scoped_async(Some(scope_owned), move || async move {
+                $crate::runtime::debug(format!($($arg)*)).await;
+            })
+        }
     };
 }
-

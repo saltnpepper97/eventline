@@ -12,7 +12,6 @@
 //! each event. Outcomes for scopes are recorded via [`ScopeExit`](RecordKind::ScopeExit) records.
 
 pub mod buffer;
-pub mod event_kind;
 pub mod filter;
 pub mod id;
 pub mod outcome;
@@ -27,7 +26,6 @@ use self::utils::current_millis;
 // Re-export JournalWriter so it's accessible as journal::JournalWriter
 pub use self::writer::JournalWriter;
 
-pub use event_kind::EventKind;
 pub use id::{RecordId, ScopeId};
 pub use outcome::Outcome;
 pub use record::{Record, RecordKind};
@@ -252,18 +250,35 @@ impl Journal {
     /// let mut journal = Journal::new();
     /// let scope_id = journal.enter_scope_unnamed(None);
     /// journal.exit_scope(scope_id, Outcome::Success);
-    /// ```
+    /// ```   
     pub fn exit_scope(&mut self, scope: ScopeId, outcome: Outcome) -> RecordId {
-        // DEBUG-ONLY: Validate scope exists in this journal
+        // 1. Validate scope exists
         debug_assert!(
             (scope.0 as usize) < self.scopes.len(),
             "Attempted to exit non-existent scope {:?}",
             scope
         );
 
-        let id = RecordId(self.records.len() as u64);
+        if let Some(s) = self.scopes.get(scope.0 as usize) {
+            if s.exited_at.is_some() {
+                // Already exited; return last exit record ID if you want
+                return self.records.iter()
+                    .rev()
+                    .find(|r| matches!(r.kind, RecordKind::ScopeExit { .. }) && r.scope == Some(scope))
+                    .map(|r| r.id)
+                    .unwrap_or(RecordId(0));
+            }
+        }
 
+        let id = RecordId(self.records.len() as u64);
         let now = current_millis();
+
+        // 3. Update the scope metadata (optional but recommended for performance)
+        if let Some(s) = self.scopes.get_mut(scope.0 as usize) {
+            s.exited_at = Some(now);
+        }
+
+        // 4. Record the exit
         self.records.push(Record {
             id,
             scope: Some(scope),
@@ -349,6 +364,36 @@ impl Journal {
     /// Returns `Some(&Scope)` if the scope exists, `None` otherwise.
     pub fn get_scope(&self, id: ScopeId) -> Option<&Scope> {
         self.scopes.get(id.0 as usize)
+    }
+
+    /// Returns `true` if the given scope is still active (i.e., has not been exited).
+    ///
+    /// Returns `false` if the scope has been exited or the scope ID is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use eventline::journal::Journal;
+    /// use eventline::journal::outcome::Outcome;
+    ///
+    /// let mut journal = Journal::new();
+    /// let scope = journal.enter_scope_unnamed(None);
+    /// assert!(journal.is_scope_active(scope));
+    ///
+    /// journal.exit_scope(scope, Outcome::Success);
+    /// assert!(!journal.is_scope_active(scope));
+    /// ```
+    pub fn is_scope_active(&self, scope: ScopeId) -> bool {
+        // If scope ID is invalid, consider it inactive
+        if (scope.0 as usize) >= self.scopes.len() {
+            return false;
+        }
+
+        // Scan records in reverse for the first exit of this scope
+        !self.records.iter().rev().any(|r| matches!(
+            r.kind,
+            RecordKind::ScopeExit { .. } if r.scope == Some(scope)
+        ))
     }
 
     /// Record an informational event within an optional scope.

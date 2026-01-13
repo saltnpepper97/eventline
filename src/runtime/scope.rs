@@ -4,6 +4,7 @@ use futures::FutureExt;
 use super::{get_runtime, RUNTIME, CURRENT_SCOPE, THREAD_SCOPE};
 use crate::journal::id::ScopeId;
 use crate::Outcome;
+use crate::scope::AsyncScopeGuard;
 
 /// Get the current scope for this thread.
 ///
@@ -153,34 +154,29 @@ where
     Fut: Future<Output = R> + Send,
     R: Send + 'static,
 {
-    // Get runtime
     let rt = get_runtime().await;
 
-    // Enter scope in journal
     let scope_id = {
         let mut journal = rt.journal.lock().await;
         let parent = CURRENT_SCOPE.try_with(|s| *s).ok().flatten();
         journal.enter_scope(parent, name)
     };
 
-    // Run the async closure inside a new CURRENT_SCOPE
+    let guard = AsyncScopeGuard::new(rt.journal.clone(), scope_id);
+
     CURRENT_SCOPE
         .scope(Some(scope_id), async move {
-            let fut = async {
-                f().await
-            };
+            let result = std::panic::AssertUnwindSafe(f())
+                .catch_unwind()
+                .await;
 
-            let result = std::panic::AssertUnwindSafe(fut).catch_unwind().await;
-
-            // exit scope
-            let mut journal = rt.journal.lock().await;
             match result {
                 Ok(value) => {
-                    journal.exit_scope(scope_id, Outcome::Success);
+                    guard.exit(Outcome::Success).await;
                     value
                 }
                 Err(panic) => {
-                    journal.exit_scope(scope_id, Outcome::Aborted);
+                    guard.exit(Outcome::Aborted).await;
                     std::panic::resume_unwind(panic);
                 }
             }
@@ -292,29 +288,25 @@ where
         None => return f().await,
     };
 
-    // Enter scope
     let scope_id = {
         let mut journal = rt.journal.lock().await;
         let parent = CURRENT_SCOPE.try_with(|s| *s).ok().flatten();
         journal.enter_scope(parent, name)
     };
 
-    // Run async closure inside the new scope
+    let guard = AsyncScopeGuard::new(rt.journal.clone(), scope_id);
+
     CURRENT_SCOPE
         .scope(Some(scope_id), async move {
-            let fut = std::panic::AssertUnwindSafe(f()).catch_unwind();
-            let result = fut.await;
-
-            // Exit scope
-            let mut journal = rt.journal.lock().await;
+            let result = std::panic::AssertUnwindSafe(f()).catch_unwind().await;
             match result {
-                Ok(value) => {
-                    journal.exit_scope(scope_id, Outcome::Success);
-                    value
+                Ok(v) => {
+                    guard.exit(Outcome::Success).await;
+                    v
                 }
-                Err(panic) => {
-                    journal.exit_scope(scope_id, Outcome::Aborted);
-                    std::panic::resume_unwind(panic);
+                Err(p) => {
+                    // Aborted will be recorded by guard drop
+                    std::panic::resume_unwind(p);
                 }
             }
         })

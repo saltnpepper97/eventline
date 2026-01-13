@@ -150,10 +150,13 @@ macro_rules! event_scope {
 #[macro_export]
 macro_rules! event_scope_async {
     ($name:expr, $body:block) => {
-        $crate::runtime::scope::scoped_async(Some($name.to_string()), || async move $body)
+        {
+            // wrap in async move to take ownership of outer vars
+            let fut = async move $body;
+            $crate::runtime::scope::scoped_async(Some($name.to_string()), || fut)
+        }
     };
 }
-
 
 /// Execute code within a named scope, without panicking if runtime is uninitialized.
 ///

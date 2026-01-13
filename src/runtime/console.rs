@@ -1,10 +1,18 @@
 //! Console output for live event streaming.
 //!
 //! This module provides immediate terminal output for events as they're recorded,
-//! enabling a "dual output" mode where events are both journaled and printed.
+//! using the canonical "Narrative Structured" format for consistency with all
+//! other output destinations.
+//!
+//! ## Design Philosophy
+//!
+//! Unscoped logs remain simple (no headers). Scoped logs use full canonical format.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::journal::event_kind::EventKind;
+
+#[cfg(feature = "colour")]
+use crate::render::colour::{RESET, GREEN, RED, YELLOW, BLUE};
 
 /// Global flag controlling console output.
 static CONSOLE_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -15,8 +23,7 @@ static CONSOLE_COLOR: AtomicBool = AtomicBool::new(true);
 /// Enable or disable automatic console output for events.
 ///
 /// When enabled, events are printed to the console immediately as they're recorded,
-/// in addition to being stored in the journal. This provides real-time feedback
-/// similar to traditional logging libraries.
+/// in addition to being stored in the journal. Uses canonical format for consistency.
 ///
 /// # Example
 ///
@@ -40,7 +47,7 @@ pub fn is_console_enabled() -> bool {
 
 /// Enable or disable color output for console events.
 ///
-/// This only has effect if the `color` feature is enabled at compile time.
+/// This only has effect if the `colour` feature is enabled at compile time.
 /// Without the feature, output is always plain regardless of this setting.
 ///
 /// # Example
@@ -63,17 +70,24 @@ pub fn is_console_color_enabled() -> bool {
     CONSOLE_COLOR.load(Ordering::Relaxed)
 }
 
-/// Print an event to the console with appropriate formatting.
+/// Print an event to the console with canonical formatting.
 ///
 /// This is called internally by the runtime when console output is enabled.
-/// It applies consistent formatting based on the event kind:
-/// - Debug: prefixed with "debug: " (blue if color enabled)
-/// - Info: no prefix
-/// - Warning: prefixed with "warning: " (yellow if color enabled)
-/// - Error: prefixed with "error: " and sent to stderr (red if color enabled)
+/// Uses the same format as journal writers and render tree for consistency.
+///
+/// **Format for unscoped logs** (simple):
+/// ```text
+/// info message
+/// warning: disk space low
+/// error: failed to connect
+/// debug: packet received
+/// ```
+///
+/// **Format for scoped logs** (canonical):
+/// Uses full scope headers and event bullets matching the journal format.
 ///
 /// Color is automatically applied if:
-/// 1. The `color` feature is enabled at compile time, AND
+/// 1. The `colour` feature is enabled at compile time, AND
 /// 2. Color is enabled at runtime via `enable_console_color(true)`
 pub fn print_event(kind: EventKind, message: &str) {
     #[cfg(feature = "colour")]
@@ -84,7 +98,7 @@ pub fn print_event(kind: EventKind, message: &str) {
         }
     }
     
-    // Plain output (no color)
+    // Plain output (no color) - simple format for unscoped logs
     match kind {
         EventKind::Debug => println!("debug: {}", message),
         EventKind::Info => println!("{}", message),
@@ -93,17 +107,89 @@ pub fn print_event(kind: EventKind, message: &str) {
     }
 }
 
-/// Print an event with ANSI color codes.
+/// Print an event with ANSI color codes using canonical format.
 ///
 /// Internal function - automatically called by `print_event` when color is enabled.
 #[cfg(feature = "colour")]
 fn print_event_colored(kind: EventKind, message: &str) {
-    use crate::render::colour::{RESET, RED, YELLOW, BLUE};
+    match kind {
+        EventKind::Debug => println!("{}debug: {} {}", BLUE, RESET, message),
+        EventKind::Info  => println!("{}info: {} {}", GREEN, RESET, message),
+        EventKind::Warning => println!("{}warning:{} {}", YELLOW, RESET, message),
+        EventKind::Error => eprintln!("{}error: {} {}", RED, RESET, message),
+    }
+}
+
+/// Print a scoped event with full canonical formatting.
+///
+/// This is used when events belong to a scope and should match the journal format.
+/// Uses bullet points and proper indentation.
+///
+/// **Format**:
+/// ```text
+///   • info      message here
+///   • warning   disk space low
+///   • error     connection failed
+/// ```
+pub fn print_scoped_event(kind: EventKind, message: &str, indent_level: usize) {
+    let bullet = if cfg!(windows) { "*" } else { "•" };
+    let indent = " ".repeat(2 * indent_level);
+    
+    #[cfg(feature = "colour")]
+    {
+        if is_console_color_enabled() {
+            print_scoped_event_colored(kind, message, &indent, bullet);
+            return;
+        }
+    }
+    
+    // Plain output with canonical alignment
+    let kind_label = match kind {
+        EventKind::Info => "info     ",
+        EventKind::Warning => "warning  ",
+        EventKind::Error => "error    ",
+        EventKind::Debug => "debug    ",
+    };
     
     match kind {
-        EventKind::Debug => println!("{}debug:{} {}", BLUE, RESET, message),
-        EventKind::Info => println!("{}", message),
-        EventKind::Warning => println!("{}warning:{} {}", YELLOW, RESET, message),
-        EventKind::Error => eprintln!("{}error:{} {}", RED, RESET, message),
+        EventKind::Error => eprintln!("{}{} {} {}", indent, bullet, kind_label, message),
+        _ => println!("{}{} {} {}", indent, bullet, kind_label, message),
+    }
+}
+
+/// Print a scoped event with color using canonical format.
+#[cfg(feature = "colour")]
+fn print_scoped_event_colored(kind: EventKind, message: &str, indent: &str, bullet: &str) {
+    // Match canonical rendering: color the kind label, pad to alignment
+    let (colored_label, padding) = match kind {
+        EventKind::Warning => (format!("{}warning{}", YELLOW, RESET), "  "),
+        EventKind::Error => (format!("{}error{}", RED, RESET), "    "),
+        EventKind::Debug => (format!("{}debug{}", BLUE, RESET), "    "),
+        EventKind::Info => ("info".to_string(), "     "),
+    };
+    
+    match kind {
+        EventKind::Error => eprintln!("{}{} {}{} {}", indent, bullet, colored_label, padding, message),
+        _ => println!("{}{} {}{} {}", indent, bullet, colored_label, padding, message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_console_flags() {
+        enable_console_output(true);
+        assert!(is_console_enabled());
+        
+        enable_console_output(false);
+        assert!(!is_console_enabled());
+        
+        enable_console_color(true);
+        assert!(is_console_color_enabled());
+        
+        enable_console_color(false);
+        assert!(!is_console_color_enabled());
     }
 }
