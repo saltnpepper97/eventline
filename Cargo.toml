@@ -1,6 +1,6 @@
 [package]
 name = "eventline"
-version = "0.3.2"
+version = "0.3.21"
 edition = "2024"
 authors = ["Dustin Pilgrim <dustin.pilgrim1997@gmail.com>"]
 description = "A structured event journaling library with scoped timelines, outcomes, and serialization support."
