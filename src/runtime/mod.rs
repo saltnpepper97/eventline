@@ -39,7 +39,9 @@
 //! use eventline::runtime;
 //! use eventline::EventKind;
 //! use eventline::journal::JournalWriter;
+//! use eventline::render;
 //! use std::fs::File;
+//!
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -89,9 +91,12 @@ pub use scope::{
     try_scoped_unnamed_async,
 };
 
+use std::io::Write;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{Mutex, RwLock};
 
+use crate::render;
+use crate::Filter;
 use crate::Outcome;
 use crate::ScopeId;
 use crate::Journal;
@@ -361,3 +366,102 @@ where
 pub fn enable_live_logging(path: impl Into<std::path::PathBuf>) {
     live_log::enable(path.into());
 }
+
+/// Render a journal summary using runtime's current journal.
+///
+/// Prints to console if console output is enabled, and writes to live log file if enabled.
+///
+/// This function acquires the journal lock briefly to snapshot the data,
+/// then releases it before rendering to avoid blocking concurrent operations.
+///
+/// # Arguments
+/// * `color` - Use ANSI colors for console output (ignored for live log)
+/// * `filter` - Optional filter to restrict which scopes/events are included
+pub async fn runtime_summary(color: bool, filter: Option<&Filter>, per_scope: bool) {
+    let rt_opt = crate::runtime::RUNTIME.read().await.clone();
+    let Some(rt) = rt_opt else { return };
+
+    let summary_data = {
+        let journal = rt.journal.lock().await;
+        let default_filter_storage = Filter::default();
+        let default_filter = filter.unwrap_or(&default_filter_storage);
+
+        let filtered_scopes: Vec<_> = journal
+            .scopes()
+            .iter()
+            .filter(|s| default_filter.matches_scope(s, &journal))
+            .cloned()
+            .collect();
+
+        let total_scopes = filtered_scopes.len();
+        let total_events = journal
+            .records()
+            .iter()
+            .filter(|r| matches!(r.kind, crate::RecordKind::Event { .. }))
+            .filter(|r| default_filter.matches_event(r))
+            .count();
+
+        let mut success = 0;
+        let mut failure = 0;
+        let mut aborted = 0;
+
+        for scope in &filtered_scopes {
+            let outcome = journal.records().iter()
+                .find(|r| matches!(r.kind, crate::RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id))
+                .map(|r| if let crate::RecordKind::ScopeExit { outcome, .. } = r.kind { outcome } else { crate::Outcome::Aborted })
+                .unwrap_or(crate::Outcome::Aborted);
+
+            match outcome {
+                crate::Outcome::Success => success += 1,
+                crate::Outcome::Failure => failure += 1,
+                crate::Outcome::Aborted => aborted += 1,
+            }
+        }
+
+        let total_duration_ms: u64 = filtered_scopes.iter().map(|s| {
+            journal.records().iter()
+                .find(|r| matches!(r.kind, crate::RecordKind::ScopeExit { .. }) && r.scope == Some(s.id))
+                .and_then(|r| {
+                    if let crate::RecordKind::ScopeExit { exited_at, .. } = r.kind {
+                        Some(exited_at.saturating_sub(s.entered_at))
+                    } else { None }
+                })
+                .unwrap_or(0)
+        }).sum();
+
+        (total_scopes, total_events, success, failure, aborted, total_duration_ms, filtered_scopes, journal.clone())
+    };
+
+    let (total_scopes, total_events, success, failure, aborted, total_duration_ms, filtered_scopes, journal_snapshot) = summary_data;
+
+    // --- Console output ---
+    if crate::runtime::is_console_enabled() {
+        render::render_summary(&journal_snapshot, color, filter, per_scope);
+    }
+
+    // --- Live log output ---
+    let mut buffer = Vec::new();
+    let config = render::canonical::RenderConfig::no_color();
+
+    let _ = writeln!(buffer, "Session summary: {} scopes, {} events", total_scopes, total_events);
+    let _ = writeln!(buffer, "  Successful scopes: {}", success);
+    let _ = writeln!(buffer, "  Failed scopes: {}", failure);
+    let _ = writeln!(buffer, "  Aborted scopes: {}", aborted);
+    let _ = writeln!(buffer, "  Total duration: {}ms", total_duration_ms);
+
+    if per_scope {
+        let _ = writeln!(buffer, "\nPer-scope summary:");
+        for scope in &filtered_scopes {
+            let scope_header = render::canonical::render_scope_header(&journal_snapshot, scope, &config);
+            let _ = writeln!(buffer, "  {}", scope_header.header);
+        }
+    }
+
+    // Write to live log if enabled
+    let text = String::from_utf8_lossy(&buffer);
+    for line in text.lines() {
+        live_log::append(line);
+    }
+}
+
+

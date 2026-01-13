@@ -425,7 +425,7 @@ async fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.3.21"
+eventline = "0.3.22"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -433,7 +433,7 @@ Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.3.21", features = ["colour"] }
+eventline = { version = "0.3.22", features = ["colour"] }
 ```
 
 ---

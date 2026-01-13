@@ -106,7 +106,7 @@ fn render_scope_tree(
 /// * `journal` - The journal to summarize
 /// * `color` - Enable ANSI color codes
 /// * `filter` - Optional filter to apply. If `None`, all scopes and events are included.
-pub fn render_summary(journal: &Journal, color: bool, filter: Option<&Filter>) {
+pub fn render_summary(journal: &Journal, color: bool, filter: Option<&Filter>, per_scope: bool) {
     let default_filter = Filter::default();
     let filter = filter.unwrap_or(&default_filter);
 
@@ -168,10 +168,12 @@ pub fn render_summary(journal: &Journal, color: bool, filter: Option<&Filter>) {
     println!("  Failed scopes: {}", failure);
     println!("  Aborted scopes: {}", aborted);
     println!("  Total duration: {}ms", total_duration_ms);
-
-    println!("\nPer-scope summary:");
-    for scope in &filtered_scopes {
-        let scope_header = render_scope_header(journal, scope, &config);
-        println!("  {}", scope_header.header);
+        
+    if per_scope {
+        println!("\nPer-scope summary:");
+        for scope in &filtered_scopes {
+            let scope_header = render_scope_header(journal, scope, &config);
+            println!("  {}", scope_header.header);
+        }
     }
 }
