@@ -109,7 +109,7 @@ Structured output with scope headers, timestamps, and aligned formatting:
   • info      Binding to 0.0.0.0:8080
   • info      Server started successfully
   • warning   cache at 95% capacity
-
+```
 ---
 
 ## Architecture
@@ -123,15 +123,15 @@ Structured output with scope headers, timestamps, and aligned formatting:
 │   Runtime   │  Global, thread-safe facade (optional)
 └──────┬──────┘
        ↓
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│   Journal   │  │   Console   │  │ LiveLogFile │
-└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
+┌─────────────┐   ┌─────────────┐   ┌─────────────┐
+│   Journal   │   │   Console   │   │ LiveLogFile │
+└──────┬──────┘   └──────┬──────┘   └──────┬──────┘
        │                │                │
        └────────────────┴────────────────┘
-                       ↓
-              ┌─────────────────┐
-              │ Canonical Format│  Single rendering source
-              └─────────────────┘
+                        ↓
+┌─────────────────────┐
+│  Canonical Format   │  Single rendering source
+└─────────────────────┘
 ```
 
 **Core Layer** (always available):
