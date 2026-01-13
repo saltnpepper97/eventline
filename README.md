@@ -126,12 +126,12 @@ Structured output with scope headers, timestamps, and aligned formatting:
 ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
 │   Journal   │   │   Console   │   │ LiveLogFile │
 └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
-       │                │                │
-       └────────────────┴────────────────┘
+       │                 │                 │
+       └─────────────────┴─────────────────┘
                         ↓
-┌─────────────────────┐
-│  Canonical Format   │  Single rendering source
-└─────────────────────┘
+             ┌─────────────────────┐
+             │  Canonical Format   │  Single rendering source
+             └─────────────────────┘
 ```
 
 **Core Layer** (always available):
