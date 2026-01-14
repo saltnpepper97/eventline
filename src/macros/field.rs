@@ -132,3 +132,41 @@ macro_rules! event_debug_scoped_fields {
         });
     }};
 }
+
+/// Run an async block inside a **single structured eventline scope** with fields.
+///
+/// Like `scoped_eventline!`, but allows logging events with structured fields (`Fields`).
+///
+/// Inside the block, you can call:
+/// - `eventline::runtime::info_fields(msg, fields).await`
+/// - `eventline::runtime::debug_fields(msg, fields).await`
+/// - etc.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{runtime, fields, scoped_eventline_fields};
+/// # async fn example() {
+/// scoped_eventline_fields!("UserLogin", {
+///     let f = fields!({
+///         "user_id" => 12345,
+///         "action" => "login",
+///     });
+///     eventline::runtime::info_fields("Login attempt started", f.clone()).await;
+///
+///     // do async work...
+///
+///     eventline::runtime::debug_fields("Login attempt finished", f).await;
+/// });
+/// # }
+/// ```
+#[macro_export]
+macro_rules! scoped_eventline_fields {
+    ($scope_name:expr, $body:block) => {{
+        $crate::runtime::scope::scoped_in_place(
+            Some($scope_name.to_string()),
+            async move { $body }
+        )
+        .await
+    }};
+}

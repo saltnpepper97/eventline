@@ -153,3 +153,78 @@ macro_rules! event_debug_scoped {
         }
     };
 }
+
+/// Run an async block inside a **single structured eventline scope**.
+///
+/// This macro allows you to wrap multiple info/debug/error/warn calls
+/// in a **single logical scope** in the eventline journal. It ensures that
+/// all events logged inside the block belong to the same scope, avoiding
+/// excessive scope creation and lifetime issues when using `&mut self` or
+/// other borrowed data.
+///
+/// Unlike the single-line macros like [`event_info_scoped!`] or
+/// [`event_debug_scoped!`], this macro executes your block **in-place**
+/// and allows `.await` inside. This is perfect for multi-step operations
+/// where you want all log messages to be grouped under the same header.
+///
+/// # Note
+///
+/// - The `$scope_name` must be convertible to `String` (usually `&str` or `String`).
+/// - Inside the block, you can use:
+///   - `eventline::runtime::info(...)`
+///   - `eventline::runtime::debug(...)`
+///   - `eventline::runtime::warn(...)`
+///   - `eventline::runtime::error(...)`
+///   - `.await` normally on async calls
+/// - This macro does **not spawn a detached task**; it runs the block inline.
+/// - Recommended for operations that manipulate borrowed data (`&mut self`) or need
+///   guaranteed order of log messages.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::scoped_eventline;
+/// # use eventline::runtime;
+/// # async fn example() {
+/// // Wrap the entire process in one journal scope
+/// scoped_eventline!("TriggerInstantActions", {
+///     // Info message at the start
+///     eventline::runtime::info("Triggering instant actions...").await;
+///
+///     // Imagine a list of "actions"
+///     let instant_actions = vec!["action1", "action2"];
+///
+///     for action in &instant_actions {
+///         // Placeholder for action run
+///         // async fn run_action(action: &str) { ... } could be called here
+///         // run_action(action).await;
+///
+///         // Log inside the same scope
+///         eventline::runtime::debug(&format!("Ran instant action: {}", action)).await;
+///     }
+///
+///     // Placeholder for marking state
+///     let index = instant_actions.len();
+///
+///     eventline::runtime::info(&format!("Instant actions complete, starting at index {}", index)).await;
+/// });
+/// # }
+/// ```
+///
+/// This pattern replaces multiple detached scopes like [`event_info_scoped!`]
+/// or [`event_debug_scoped!`] with **one unified scope**, keeping the journal cleaner
+/// and avoiding lifetime/`'static` issues.
+///
+/// [`event_info_scoped!`]: crate::event_info_scoped
+/// [`event_debug_scoped!`]: crate::event_debug_scoped
+#[macro_export]
+macro_rules! scoped_eventline {
+    ($scope_name:expr, $body:block) => {{
+        $crate::runtime::scope::scoped_in_place(
+            Some($scope_name.to_string()),
+            async move { $body }
+        )
+        .await
+    }};
+}
+
