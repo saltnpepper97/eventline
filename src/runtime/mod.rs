@@ -3,45 +3,16 @@
 //! This module provides a process-wide facade over the pure [`Journal`].
 //! It enables:
 //! - Fire-and-forget event recording from anywhere in the codebase
-//! - Automatic scope tracking per thread
+//! - Automatic scope tracking per async task
 //! - No &mut Journal required at call sites
 //! - Safe concurrent access via internal synchronization
 //! - Optional dual output: journal + immediate console printing
-//!
-//! The runtime is optional - [`Journal`] remains usable standalone.
-//!
-//! # Architecture
-//!
-//! ```text
-//!┌─────────────┐
-//!│   Macros    │  event_info!(), event_scope!()
-//!└──────┬──────┘
-//!       ↓
-//!┌─────────────┐
-//!│   Runtime   │  Global, thread-safe facade (optional)
-//!└──────┬──────┘
-//!       ↓
-//!┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-//!│   Journal   │   │   Console   │   │ LiveLogFile │
-//!└──────┬──────┘   └──────┬──────┘   └──────┬──────┘
-//!       │                 │                 │
-//!       └─────────────────┴─────────────────┘
-//!                         ↓
-//!               ┌─────────────────────┐
-//!               │  Canonical Format   │  Single rendering source
-//!               └─────────────────────┘
-//!
-//! ```
 //!
 //! # Example
 //!
 //! ```rust,ignore
 //! use eventline::runtime;
-//! use eventline::EventKind;
-//! use eventline::journal::JournalWriter;
-//! use eventline::render;
-//! use std::fs::File;
-//!
+//! use eventline::{event_info, scoped_eventline};
 //!
 //! #[tokio::main]
 //! async fn main() {
@@ -51,20 +22,14 @@
 //!     // Enable dual output (optional)
 //!     runtime::enable_console_output(true);
 //!
-//!     // Record events - they'll be both journaled and printed
-//!     runtime::record(EventKind::Info, "Application started");
+//!     // Record single events
+//!     event_info!("Application started");
 //!
 //!     // Create scoped contexts
-//!     runtime::scoped(Some("DatabaseMigration"), || {
-//!         runtime::record(EventKind::Info, "Applying migrations");
-//!         runtime::record(EventKind::Info, "Migration complete");
-//!     }).await;
-//!
-//!     // Access journal for output
-//!     runtime::with_journal(|journal| {
-//!         let mut file = File::create("eventline.log").unwrap();
-//!         JournalWriter::new().write_to(&mut file, journal).unwrap();
-//!     }).await;
+//!     scoped_eventline!("DatabaseMigration", {
+//!         runtime::info("Starting migration").await;
+//!         runtime::info("Migration complete").await;
+//!     });
 //! }
 //! ```
 
@@ -76,20 +41,12 @@ pub mod tests;
 
 pub use event::{record, info, warn, error, debug};
 pub use live_log::{append, enable};
-pub use scope::{
-    // sync scopes
-    current_scope,
-    current_scope_sync,
-    scoped,
-    scoped_unnamed,
-    try_scoped,
-    try_scoped_unnamed,
+pub use scope::{current_scope, current_scope_sync, scoped_in_place, try_scoped_unnamed, try_scoped_unnamed_async, scoped_unnamed};
+pub use log_level::*;
 
-    // async scopes
-    scoped_async,
-    try_scoped_async,
-    try_scoped_unnamed_async,
-};
+// Note: Other scope functions (scoped, scoped_async, try_scoped, etc.) are kept
+// in the scope module for internal use and tests, but not re-exported publicly.
+// Users should use the scoped_eventline! macro instead.
 
 use std::io::Write;
 use std::sync::{Arc, LazyLock};
@@ -97,27 +54,17 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::render;
 use crate::Filter;
-use crate::Outcome;
 use crate::ScopeId;
 use crate::Journal;
 use crate::render::console;
 
 /// Global runtime singleton.
-///
-/// Uses RwLock to allow reset() for testing without blocking readers.
 static RUNTIME: LazyLock<RwLock<Option<Arc<Runtime>>>> =
     LazyLock::new(|| RwLock::new(None));
 
-// Thread-local scope tracking.
-// Each thread maintains its own current scope context, allowing
-// nested scopes to work naturally across thread boundaries.
+// Task-local scope tracking for async code
 tokio::task_local! {
     static CURRENT_SCOPE: Option<ScopeId>;
-}
-
-
-tokio::task_local! {
-    pub static PENDING_OUTCOME: std::sync::Arc<tokio::sync::Mutex<Option<Outcome>>>;
 }
 
 // Thread-local fallback for synchronous scoped(...) closures.
@@ -135,25 +82,7 @@ struct Runtime {
     journal: Arc<Mutex<Journal>>,
 }
 
-/// Access the global journal for advanced operations.
-///
-/// Provides a way to interact with the journal directly via a closure.
-/// For general logging, prefer the high-level API: [`record`], [`info`], [`warn`], [`error`], [`debug`].
-///
-/// # Example
-///
-/// ```
-/// use eventline::runtime;
-///
-/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// runtime::init().await;
-///
-/// // Access the journal safely
-/// runtime::with_journal_mut(|journal| {
-///     journal.record(None, "Direct log entry");
-/// });
-/// # });
-/// ```
+/// Access the global runtime (panics if not initialized).
 async fn get_runtime() -> Arc<Runtime> {
     let runtime_guard = RUNTIME.read().await;
     runtime_guard
@@ -167,15 +96,15 @@ async fn get_runtime() -> Arc<Runtime> {
 /// Must be called once before using any logging or scoped operations.  
 /// If called multiple times, it will reset the previous runtime state.
 ///
-/// After initialization, functions like [`record`], [`scoped`], and console logging are available.
-///
 /// # Example
 ///
 /// ```
 /// use eventline::runtime;
 ///
-/// runtime::init();
-/// runtime::info("Application started");
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// runtime::init().await;
+/// runtime::info("Application started").await;
+/// # });
 /// ```
 pub async fn init() {
     let mut guard = RUNTIME.write().await;
@@ -187,16 +116,18 @@ pub async fn init() {
 /// Resets the global runtime to an uninitialized state.
 ///
 /// Primarily useful for testing scenarios where a clean runtime state is needed
-/// between test runs. Also clears the thread-local current scope.
+/// between test runs.
 ///
 /// # Example
 ///
 /// ```
 /// use eventline::runtime;
 ///
-/// runtime::init();
-/// runtime::info("Test event");
-/// runtime::reset(); // resets runtime for next test
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// runtime::init().await;
+/// runtime::info("Test event").await;
+/// runtime::reset().await; // resets runtime for next test
+/// # });
 /// ```
 pub async fn reset() {
     let mut guard = RUNTIME.write().await;
@@ -204,29 +135,6 @@ pub async fn reset() {
 }
 
 /// Returns whether the global runtime has been initialized.
-///
-/// # Returns
-///
-/// - `true` if the runtime is initialized (i.e., [`init`] has been called)
-/// - `false` if the runtime is uninitialized
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use eventline::runtime;
-///
-/// #[tokio::main]
-/// async fn main() {
-///     // Before init, runtime is not initialized
-///     assert!(!runtime::is_initialized().await);
-///
-///     // Initialize the runtime
-///     runtime::init().await;
-///
-///     // Now it is initialized
-///     assert!(runtime::is_initialized().await);
-/// }
-/// ```
 pub async fn is_initialized() -> bool {
     RUNTIME.read().await.is_some()
 }
@@ -241,11 +149,11 @@ pub async fn is_initialized() -> bool {
 /// ```
 /// use eventline::runtime;
 ///
-/// runtime::init();
-/// runtime::enable_console_output(true); // Enable real-time console output
-///
-/// // This will both record in journal AND print to console
-/// runtime::info("Server started on port 8080");
+/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+/// runtime::init().await;
+/// runtime::enable_console_output(true);
+/// runtime::info("Server started on port 8080").await;
+/// # });
 /// ```
 pub fn enable_console_output(enable: bool) {
     console::enable_console_output(enable);
@@ -257,26 +165,6 @@ pub fn is_console_enabled() -> bool {
 }
 
 /// Enable or disable color output for console events.
-///
-/// This controls whether ANSI color codes are used when printing events to the console.
-/// This only has effect if:
-/// 1. The `color` feature is enabled at compile time, AND
-/// 2. Console output is enabled via `enable_console_output(true)`
-///
-/// Without the `color` feature, output is always plain regardless of this setting.
-///
-/// # Example
-///
-/// ```
-/// use eventline::runtime;
-///
-/// runtime::init();
-/// runtime::enable_console_output(true);
-/// runtime::enable_console_color(true); // Enable colored output
-///
-/// runtime::error("This will be red");
-/// runtime::warn("This will be yellow");
-/// ```
 pub fn enable_console_color(enable: bool) {
     console::enable_console_color(enable);
 }
@@ -288,11 +176,6 @@ pub fn is_console_color_enabled() -> bool {
 
 /// Access the journal with a read-only closure.
 ///
-/// This allows inspecting the journal state without exposing mutable access.
-///
-/// Use this to access the journal for rendering, writing to files, or
-/// any other read-only operations.
-///
 /// # Example
 ///
 /// ```
@@ -302,16 +185,12 @@ pub fn is_console_color_enabled() -> bool {
 ///
 /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
 /// runtime::init().await;
-/// runtime::info("test event");
+/// runtime::info("test event").await;
 ///
-/// // Access the journal for read-only operations
 /// runtime::with_journal(|journal| {
-///     println!("Total events: {}", journal.records().len());
-///
-///     // Use JournalWriter to write to a file
 ///     let mut file = File::create("eventline.log").unwrap();
 ///     JournalWriter::new().write_to(&mut file, journal).unwrap();
-/// });
+/// }).await;
 /// # });
 /// ```
 pub async fn with_journal<F, R>(f: F) -> Option<R>
@@ -329,25 +208,7 @@ where
 
 /// Access the journal with a mutable closure.
 ///
-/// This provides full mutable access to the underlying journal.
 /// Use with caution - prefer the high-level API when possible.
-///
-/// # Example
-///
-/// ```
-/// use eventline::runtime;
-///
-/// runtime::init();
-///
-/// runtime::with_journal_mut(|journal| {
-///     // Direct journal manipulation
-///     journal.record(None, "Direct journal access");
-///     
-///     // Flush buffers
-///     let buffer = journal.create_buffer();
-///     journal.flush_buffer(buffer);
-/// });
-/// ```
 pub async fn with_journal_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut Journal) -> R,
@@ -370,15 +231,8 @@ pub fn enable_live_logging(path: impl Into<std::path::PathBuf>) {
 /// Render a journal summary using runtime's current journal.
 ///
 /// Prints to console if console output is enabled, and writes to live log file if enabled.
-///
-/// This function acquires the journal lock briefly to snapshot the data,
-/// then releases it before rendering to avoid blocking concurrent operations.
-///
-/// # Arguments
-/// * `color` - Use ANSI colors for console output (ignored for live log)
-/// * `filter` - Optional filter to restrict which scopes/events are included
 pub async fn runtime_summary(color: bool, filter: Option<&Filter>, per_scope: bool) {
-    let rt_opt = crate::runtime::RUNTIME.read().await.clone();
+    let rt_opt = RUNTIME.read().await.clone();
     let Some(rt) = rt_opt else { return };
 
     let summary_data = {
@@ -434,12 +288,12 @@ pub async fn runtime_summary(color: bool, filter: Option<&Filter>, per_scope: bo
 
     let (total_scopes, total_events, success, failure, aborted, total_duration_ms, filtered_scopes, journal_snapshot) = summary_data;
 
-    // --- Console output ---
-    if crate::runtime::is_console_enabled() {
+    // Console output
+    if is_console_enabled() {
         render::render_summary(&journal_snapshot, color, filter, per_scope);
     }
 
-    // --- Live log output ---
+    // Live log output
     let mut buffer = Vec::new();
     let config = render::canonical::RenderConfig::no_color();
 
@@ -457,7 +311,6 @@ pub async fn runtime_summary(color: bool, filter: Option<&Filter>, per_scope: bo
         }
     }
 
-    // Write to live log if enabled
     let text = String::from_utf8_lossy(&buffer);
     for line in text.lines() {
         live_log::append(line);
@@ -467,27 +320,6 @@ pub async fn runtime_summary(color: bool, filter: Option<&Filter>, per_scope: bo
 /// Spawn a detached task for fire-and-forget operations like logging.
 ///
 /// This allows logging macros to avoid `.await` by spawning background tasks.
-/// The task is detached, meaning we don't wait for its completion.
-///
-/// # Note
-///
-/// Since eventline uses Tokio as indicated by the existing code, this function
-/// requires a Tokio runtime to be active (which is typically the case when using
-/// the `#[tokio::main]` attribute).
-///
-/// # Panics
-///
-/// Panics if called outside of a Tokio runtime context.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use eventline::runtime;
-///
-/// runtime::spawn_detached(async {
-///     runtime::info("Background log message".to_string()).await;
-/// });
-/// ```
 pub fn spawn_detached<F>(future: F)
 where
     F: std::future::Future<Output = ()> + Send + 'static,

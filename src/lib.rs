@@ -11,8 +11,8 @@
 //! ## Core Layer (Pure, Library-First)
 //!
 //! - [`Journal`] - Pure, append-only event store
-//! - [`Scope`](scope::Scope) - Logical units of work with outcomes
-//! - [`Record`](journal::record::Record) - Individual events and scope exits
+//! - [`Scope`] - Logical units of work with outcomes
+//! - [`Record`] - Individual events and scope exits
 //! - [`Filter`] - Composable filtering criteria
 //!
 //! Use this layer when you need:
@@ -24,7 +24,7 @@
 //! ## Runtime Layer (Ergonomic, Daemon-Friendly)
 //!
 //! - [`runtime`] - Global, thread-safe facade
-//! - Macros ([`event_info!`], [`event_scope!`], etc.)
+//! - Macros (`event_info!`, `scoped_eventline!`, etc.)
 //!
 //! Use this layer when you need:
 //! - Fire-and-forget logging from anywhere
@@ -37,7 +37,7 @@
 //! ## Using the Runtime (Recommended for Applications)
 //!
 //! ```rust,no_run
-//! # use eventline::{event_info, event_scope};
+//! # use eventline::{event_info, scoped_eventline};
 //! # use eventline::runtime;
 //! # async fn example() {
 //!
@@ -48,10 +48,10 @@
 //! event_info!("Application started");
 //!
 //! // Create scoped contexts
-//! event_scope!("DatabaseMigration", {
-//!     event_info!("Applying migrations");
-//!     event_info!("Migration complete");
-//! }).await;
+//! scoped_eventline!("DatabaseMigration", {
+//!     runtime::info("Applying migrations").await;
+//!     runtime::info("Migration complete").await;
+//! });
 //!
 //! // Access the journal for rendering or custom output
 //! runtime::with_journal(|journal| {
@@ -81,6 +81,7 @@
 //! let writer = JournalWriter::new();
 //! // writer.write_to(&mut std::fs::File::create("eventline.log")?, &journal)?;
 //! ```
+
 pub mod core;
 pub mod journal;
 pub mod macros;

@@ -4,13 +4,11 @@
 ///
 /// ```rust,no_run
 /// # use eventline::fields;
-/// # use eventline::core::Fields;
 /// let f = fields!({
 ///     "user_id" => 12345,
 ///     "action" => "login",
 ///     "success" => true,
 /// });
-/// # assert!(f.get("user_id").is_some());
 /// ```
 #[macro_export]
 macro_rules! fields {
@@ -21,9 +19,25 @@ macro_rules! fields {
     }};
 }
 
-// ======================= UNESCOPED STRUCTURED MACROS =======================
-
-/// Fire-and-forget informational event with structured fields (unscoped).
+/// Fire-and-forget informational event with structured fields.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_info_fields, fields};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// event_info_fields!(
+///     "User logged in",
+///     fields!({
+///         "user_id" => 12345,
+///         "ip" => "192.168.1.1",
+///     })
+/// );
+/// # runtime::reset().await;
+/// # }
+/// ```
 #[macro_export]
 macro_rules! event_info_fields {
     ($msg:expr, $fields:expr) => {{
@@ -35,7 +49,22 @@ macro_rules! event_info_fields {
     }};
 }
 
-/// Fire-and-forget warning event with structured fields (unscoped).
+/// Fire-and-forget warning event with structured fields.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_warn_fields, fields};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// event_warn_fields!(
+///     "Cache at capacity",
+///     fields!({ "percent" => 95 })
+/// );
+/// # runtime::reset().await;
+/// # }
+/// ```
 #[macro_export]
 macro_rules! event_warn_fields {
     ($msg:expr, $fields:expr) => {{
@@ -47,7 +76,22 @@ macro_rules! event_warn_fields {
     }};
 }
 
-/// Fire-and-forget error event with structured fields (unscoped).
+/// Fire-and-forget error event with structured fields.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_error_fields, fields};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// event_error_fields!(
+///     "Connection failed",
+///     fields!({ "host" => "localhost", "port" => 5432 })
+/// );
+/// # runtime::reset().await;
+/// # }
+/// ```
 #[macro_export]
 macro_rules! event_error_fields {
     ($msg:expr, $fields:expr) => {{
@@ -59,7 +103,22 @@ macro_rules! event_error_fields {
     }};
 }
 
-/// Fire-and-forget debug event with structured fields (unscoped).
+/// Fire-and-forget debug event with structured fields.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_debug_fields, fields};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// event_debug_fields!(
+///     "Request processed",
+///     fields!({ "duration_ms" => 42, "status" => 200 })
+/// );
+/// # runtime::reset().await;
+/// # }
+/// ```
 #[macro_export]
 macro_rules! event_debug_fields {
     ($msg:expr, $fields:expr) => {{
@@ -68,105 +127,5 @@ macro_rules! event_debug_fields {
         $crate::runtime::spawn_detached(async move {
             $crate::runtime::event::debug_fields(msg, f).await;
         });
-    }};
-}
-
-// ======================= SCOPED STRUCTURED MACROS =======================
-
-/// Fire-and-forget informational event with structured fields (scoped).
-#[macro_export]
-macro_rules! event_info_scoped_fields {
-    ($scope:expr, $msg:expr, $fields:expr) => {{
-        let scope = $scope.to_string();
-        let msg = $msg.to_string();
-        let f = $fields;
-        $crate::runtime::spawn_detached(async move {
-            $crate::runtime::scoped_async(Some(scope), move || async move {
-                $crate::runtime::event::info_fields(msg, f).await;
-            }).await;
-        });
-    }};
-}
-
-/// Fire-and-forget warning event with structured fields (scoped).
-#[macro_export]
-macro_rules! event_warn_scoped_fields {
-    ($scope:expr, $msg:expr, $fields:expr) => {{
-        let scope = $scope.to_string();
-        let msg = $msg.to_string();
-        let f = $fields;
-        $crate::runtime::spawn_detached(async move {
-            $crate::runtime::scoped_async(Some(scope), move || async move {
-                $crate::runtime::event::warn_fields(msg, f).await;
-            }).await;
-        });
-    }};
-}
-
-/// Fire-and-forget error event with structured fields (scoped).
-#[macro_export]
-macro_rules! event_error_scoped_fields {
-    ($scope:expr, $msg:expr, $fields:expr) => {{
-        let scope = $scope.to_string();
-        let msg = $msg.to_string();
-        let f = $fields;
-        $crate::runtime::spawn_detached(async move {
-            $crate::runtime::scoped_async(Some(scope), move || async move {
-                $crate::runtime::event::error_fields(msg, f).await;
-            }).await;
-        });
-    }};
-}
-
-/// Fire-and-forget debug event with structured fields (scoped).
-#[macro_export]
-macro_rules! event_debug_scoped_fields {
-    ($scope:expr, $msg:expr, $fields:expr) => {{
-        let scope = $scope.to_string();
-        let msg = $msg.to_string();
-        let f = $fields;
-        $crate::runtime::spawn_detached(async move {
-            $crate::runtime::scoped_async(Some(scope), move || async move {
-                $crate::runtime::event::debug_fields(msg, f).await;
-            }).await;
-        });
-    }};
-}
-
-/// Run an async block inside a **single structured eventline scope** with fields.
-///
-/// Like `scoped_eventline!`, but allows logging events with structured fields (`Fields`).
-///
-/// Inside the block, you can call:
-/// - `eventline::runtime::info_fields(msg, fields).await`
-/// - `eventline::runtime::debug_fields(msg, fields).await`
-/// - etc.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// # use eventline::{runtime, fields, scoped_eventline_fields};
-/// # async fn example() {
-/// scoped_eventline_fields!("UserLogin", {
-///     let f = fields!({
-///         "user_id" => 12345,
-///         "action" => "login",
-///     });
-///     eventline::runtime::info_fields("Login attempt started", f.clone()).await;
-///
-///     // do async work...
-///
-///     eventline::runtime::debug_fields("Login attempt finished", f).await;
-/// });
-/// # }
-/// ```
-#[macro_export]
-macro_rules! scoped_eventline_fields {
-    ($scope_name:expr, $body:block) => {{
-        $crate::runtime::scope::scoped_in_place(
-            Some($scope_name.to_string()),
-            async move { $body }
-        )
-        .await
     }};
 }

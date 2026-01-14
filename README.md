@@ -17,7 +17,7 @@ Eventline records *what happened*, *when it happened*, and *in what causal conte
 - **Unified color control** — consistent ANSI colors across console and renderer
 - **Flexible filtering** — by outcome, depth, duration, event kind, message content
 - **High-throughput batching** — `JournalBuffer` for batch writes
-- **Async runtime support** — fire-and-forget logging and async scopes (`scoped_async()`)
+- **Async runtime support** — fire-and-forget logging and async scopes
 - **Deterministic replay** — safe concurrent reads, reliable audit trails
 
 ---
@@ -37,13 +37,14 @@ You get:
 - A complete execution record for post-mortem analysis
 
 ---
+
 ## Quick Start
 
 ### Runtime API (Fire-and-Forget Async)
 
 ```rust
 use eventline::runtime;
-use eventline::{event_info, event_scope_async, event_scope_unnamed};
+use eventline::{event_info, event_info_scoped, scoped_eventline};
 
 #[tokio::main]
 async fn main() {
@@ -51,21 +52,20 @@ async fn main() {
     runtime::init().await;
 
     // Enable console output
-    runtime::enable_console_output(true).await;
-    runtime::enable_console_color(true).await;
+    runtime::enable_console_output(true);
+    runtime::enable_console_color(true);
 
     // Fire-and-forget logging
-    event_info!("Async logging example");
+    event_info!("Application started");
 
-    // Named async scope
-    event_scope_async!("AsyncTask", {
-        event_info!("Inside async scope");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    });
+    // Single scoped event
+    event_info_scoped!("DatabaseMigration", "Applying schema changes");
 
-    // Unnamed async scope (note: requires 'async' keyword)
-    event_scope_unnamed!(async {
-        event_info!("Unnamed async work");
+    // Multiple events in a scope
+    scoped_eventline!("Startup", {
+        runtime::info("Loading configuration").await;
+        runtime::info("Connecting to database").await;
+        runtime::info("Server ready").await;
     });
 }
 ```
@@ -75,16 +75,15 @@ async fn main() {
 For libraries or embedded systems:
 
 ```rust
-use eventline::journal::Journal;
-use eventline::journal::outcome::Outcome;
-use eventline::journal::writer::JournalWriter;
+use eventline::Journal;
+use eventline::Outcome;
+use eventline::JournalWriter;
 
 let mut journal = Journal::new();
 
-journal.scoped(None, Some("Task"), |journal, scope| {
-    journal.record(Some(scope), "Starting task");
-    journal.warn(Some(scope), "Low memory");
-});
+let scope = journal.enter_scope(None, Some("Task"));
+journal.record(Some(scope), "Starting task");
+journal.exit_scope(scope, Outcome::Success);
 
 // Use JournalWriter to output the journal
 let writer = JournalWriter::new();
@@ -93,17 +92,12 @@ let writer = JournalWriter::new();
 
 ### Structured Event Example
 
-This example demonstrates how to record an event with structured fields using `eventline`.
-
 ```rust
 use eventline::runtime;
-use eventline::core::{Fields, Value};
-use eventline::macros::fields;
-use eventline::macros::event_info_fields;
+use eventline::{fields, event_info_fields};
 
 #[tokio::main]
 async fn main() {
-    // Initialize the runtime
     runtime::init().await;
 
     // Build structured fields using the helper macro
@@ -113,17 +107,57 @@ async fn main() {
         "success" => true
     });
 
-    // Fire-and-forget info event with structured fields (no await needed)
+    // Fire-and-forget info event with structured fields
     event_info_fields!("User login attempt", f);
 
-    // Wait a tiny bit to let the detached task complete
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    // Shutdown runtime cleanly (optional for tests)
     runtime::reset().await;
 }
-
 ```
+
+---
+
+## API Overview
+
+### Event Macros (Fire-and-Forget)
+
+**Unscoped events:**
+```rust
+event_info!("message");
+event_debug!("message");
+event_warn!("message");
+event_error!("message");
+```
+
+**Single scoped events:**
+```rust
+event_info_scoped!("ScopeName", "message");
+event_debug_scoped!("ScopeName", "message");
+event_warn_scoped!("ScopeName", "message");
+event_error_scoped!("ScopeName", "message");
+```
+
+**Structured data:**
+```rust
+let f = fields!({ "key" => value });
+event_info_fields!("message", f);
+event_debug_fields!("message", f);
+event_warn_fields!("message", f);
+event_error_fields!("message", f);
+```
+
+**Complex scopes:**
+```rust
+scoped_eventline!("ScopeName", {
+    runtime::info("first event").await;
+    runtime::debug("second event").await;
+});
+
+scoped_eventline_fields!("ScopeName", {
+    let f = fields!({ "key" => value });
+    runtime::event::info_fields("event", f).await;
+});
+```
+
 ---
 
 ### Console Output (Simple Format)
@@ -144,13 +178,14 @@ Structured output with scope headers, timestamps, and aligned formatting:
   • info      Server started successfully
   • warning   cache at 95% capacity
 ```
+
 ---
 
 ## Architecture
 
 ```
 ┌─────────────┐
-│   Macros    │  event_info!(), event_scope!()
+│   Macros    │  event_info!(), scoped_eventline!()
 └──────┬──────┘
        ↓
 ┌─────────────┐
@@ -162,10 +197,10 @@ Structured output with scope headers, timestamps, and aligned formatting:
 └──────┬──────┘   └──────┬──────┘   └──────┬──────┘
        │                 │                 │
        └─────────────────┴─────────────────┘
-                        ↓
-             ┌─────────────────────┐
-             │  Canonical Format   │  Single rendering source
-             └─────────────────────┘
+                         ↓
+              ┌─────────────────────┐
+              │  Canonical Format   │  Single rendering source
+              └─────────────────────┘
 ```
 
 **Core Layer** (always available):
@@ -185,13 +220,12 @@ Structured output with scope headers, timestamps, and aligned formatting:
 
 ## Live Logging
 
-Live logging is **enabled per file path** using
-`runtime::enable_live_logging(PathBuf)`
+Live logging is **enabled per file path** using `runtime::enable_live_logging(PathBuf)`:
 
 ```rust
 use std::path::PathBuf;
 
-runtime::enable_live_logging(PathBuf::from("/tmp/eventline.log")).await;
+runtime::enable_live_logging(PathBuf::from("/tmp/eventline.log"));
 
 event_info!("This event will be written to the live log file automatically");
 event_warn!("Timestamped and indented according to scope depth");
@@ -207,7 +241,7 @@ Eventline supports two output modes:
 Events are recorded but not printed:
 ```rust
 runtime::init().await;
-runtime::enable_console_output(false).await; // Default
+runtime::enable_console_output(false); // Default
 
 event_info!("Silent"); // Recorded, not printed
 
@@ -221,8 +255,8 @@ runtime::with_journal(|journal| {
 Events are both journaled AND printed to console:
 ```rust
 runtime::init().await;
-runtime::enable_console_output(true).await;
-runtime::enable_console_color(true).await;
+runtime::enable_console_output(true);
+runtime::enable_console_color(true);
 
 event_info!("Starting");  // Journaled + printed
 event_warn!("Warning");   // Journaled + printed in yellow
@@ -261,13 +295,14 @@ This separation enables:
 Filtering happens when **reading** the journal, not when writing:
 
 ```rust
-use eventline::journal::filter::*;
-use eventline::journal::outcome::Outcome;
+use eventline::Filter;
+use eventline::ScopeFilter;
+use eventline::Outcome;
 
 let filter = Filter::scope(ScopeFilter::Outcome(Outcome::Failure));
 render_journal_tree(&journal, true, Some(&filter));
-
 ```
+
 Benefits:
 - Zero overhead when not filtering
 - Complete journal always preserved
@@ -280,8 +315,8 @@ Benefits:
 ### Batched Logging
 
 ```rust
-use eventline::journal::Journal;
-use eventline::journal::outcome::Outcome;
+use eventline::Journal;
+use eventline::Outcome;
 
 let mut journal = Journal::new();
 let mut buffer = journal.create_buffer();
@@ -298,7 +333,7 @@ journal.flush_buffer(buffer); // Atomic ID rebase
 ### Custom Output
 
 ```rust
-use eventline::journal::writer::JournalWriter;
+use eventline::JournalWriter;
 use std::io;
 
 let mut file = std::fs::File::create("output.log")?;
@@ -317,22 +352,21 @@ JournalWriter::new()
     )?;
 ```
 
-```
 ### Nested Scopes
 
 ```rust
-event_scope!("Deployment", {
-    event_info!("Starting deployment");
+scoped_eventline!("Deployment", {
+    runtime::info("Starting deployment").await;
     
-    event_scope!("BuildImage", {
-        event_info!("Building Docker image");
+    scoped_eventline!("BuildImage", {
+        runtime::info("Building Docker image").await;
     });
     
-    event_scope!("PushRegistry", {
-        event_info!("Pushing to registry");
+    scoped_eventline!("PushRegistry", {
+        runtime::info("Pushing to registry").await;
     });
     
-    event_info!("Deployment complete");
+    runtime::info("Deployment complete").await;
 });
 ```
 
@@ -349,7 +383,7 @@ async fn main() {
     
     // Respect NO_COLOR
     let use_color = std::env::var("NO_COLOR").is_err();
-    runtime::enable_console_color(use_color).await;
+    runtime::enable_console_color(use_color);
     
     // Optional: RUST_LOG compatibility
     let log_level = std::env::var("RUST_LOG")
@@ -362,8 +396,8 @@ async fn main() {
         })
         .unwrap_or(LogLevel::Info);
     
-    set_log_level(log_level).await;
-    runtime::enable_console_output(true).await;
+    set_log_level(log_level);
+    runtime::enable_console_output(true);
 }
 ```
 
@@ -399,16 +433,16 @@ async fn main() {
     runtime::init().await;
 
     if args.quiet {
-        runtime::enable_console_output(false).await;
-        set_log_level(LogLevel::Warning).await;
+        runtime::enable_console_output(false);
+        set_log_level(LogLevel::Warning);
     } else {
-        runtime::enable_console_output(true).await;
-        runtime::enable_console_color(!args.no_color).await;
+        runtime::enable_console_output(true);
+        runtime::enable_console_color(!args.no_color);
         
         if args.verbose {
-            set_log_level(LogLevel::Debug).await;
+            set_log_level(LogLevel::Debug);
         } else {
-            set_log_level(LogLevel::Info).await;
+            set_log_level(LogLevel::Info);
         }
     }
 
@@ -419,20 +453,20 @@ async fn main() {
     // At exit, optionally render summary with same color setting
     runtime::with_journal(|journal| {
         let use_color = !args.no_color;
-        eventline::render::render_summary(journal, use_color, None);
+        eventline::render::render_summary(journal, use_color, None, false);
     }).await;
 }
-
 ```
+
 ---
 
 ## Design Principles
 
-- **Append-only be default** - safe, auditable, deterministic
-- **Seperation of concerns** - data != rendering != runtime
+- **Append-only by default** - safe, auditable, deterministic
+- **Separation of concerns** - data != rendering != runtime
 - **Human-first output** - readable without tooling
 - **Optional global state** - usable in libraries
-- **Async-safe** - fire-and-foget from any task
+- **Async-safe** - fire-and-forget from any task
 
 ### Test-Friendly
 
@@ -440,7 +474,7 @@ async fn main() {
 #[tokio::test]
 async fn test_task() {
     runtime::init().await;
-    runtime::enable_console_output(false).await; // Quiet in tests
+    runtime::enable_console_output(false); // Quiet in tests
     
     event_info!("test");
     
@@ -458,7 +492,7 @@ async fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.4.11"
+eventline = "0.4.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -466,7 +500,7 @@ Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.4.11", features = ["colour"] }
+eventline = { version = "0.4.2", features = ["colour"] }
 ```
 
 ---

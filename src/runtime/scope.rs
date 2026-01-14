@@ -23,7 +23,7 @@ use crate::Outcome;
 ///     assert!(runtime::current_scope().await.is_none());
 ///
 ///     runtime::scoped(Some("test"), || async {
-///         assert!(runtime::current_scope().await.is_some());
+///         assert!(runtime::try_current_scope().await.is_some());
 ///     }).await;
 /// }
 /// ```
@@ -172,14 +172,14 @@ where
 ///
 /// # Example
 ///
-/// ```
+/// ```rust,ignore
 /// use eventline::runtime;
 ///
-/// runtime::init();
+/// runtime::init().await;
 ///
 /// runtime::scoped_unnamed(|| {
 ///     runtime::info("Anonymous task");
-/// });
+/// }).await;
 /// ```
 pub async fn scoped_unnamed<F, R>(f: F) -> R
 where
@@ -224,43 +224,57 @@ where
     {
         let mut journal = rt.journal.lock().await;
         journal.exit_scope(scope_id, outcome);
-        
-        // Write scope header + all events to live log when scope exits
+
+        // Write scope header + events ONLY if some events pass log_level
         if let Some(scope_ref) = journal.get_scope(scope_id) {
             use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
             use super::live_log;
-            use crate::RecordKind;
-            
-            let config = RenderConfig {
-                color: false,
-                timestamps: true,
-                bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
-                indent_size: 2,
-            };
-            
-            // Write scope header first
-            let rendered = render_scope_header(&journal, scope_ref, &config);
-            live_log::append(&rendered.header);
-            
-            // Write all events for this scope
-            let scope_depth = journal.scope_path(Some(scope_id)).len();
-            let indent_level = scope_depth.saturating_sub(1) + 1;
-            
-            for record in journal.records() {
-                if record.scope == Some(scope_id) {
-                    if matches!(record.kind, RecordKind::Event { .. }) {
-                        let event_config = RenderConfig {
-                            color: false,
-                            timestamps: false,
-                            bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
-                            indent_size: 2,
-                        };
-                        
-                        if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
-                            live_log::append(&rendered_event.main);
-                            
-                            if let Some(detail) = rendered_event.detail {
-                                live_log::append(&detail);
+            use crate::{EventKind, RecordKind};
+            use crate::runtime::log_level;
+
+            // Check if any events in this scope are visible              
+            let has_visible_events = journal.records().iter().any(|record| {
+                record.scope == Some(scope_id)
+                    && matches!(record.kind, RecordKind::Event { .. })
+                    && log_level::log_enabled(match &record.kind {
+                        RecordKind::Event { kind, .. } => *kind,
+                        _ => EventKind::Error, // fallback must be EventKind
+                    })
+            });
+
+            if has_visible_events {
+                let config = RenderConfig {
+                    color: false,
+                    timestamps: true,
+                    bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                    indent_size: 2,
+                };
+
+                // Render header
+                let rendered = render_scope_header(&journal, scope_ref, &config);
+                live_log::append(&rendered.header);
+
+                // Render all events for this scope
+                let scope_depth = journal.scope_path(Some(scope_id)).len();
+                let indent_level = scope_depth.saturating_sub(1) + 1;
+
+                for record in journal.records() {
+                    if record.scope == Some(scope_id) {
+                        if let RecordKind::Event { kind, .. } = record.kind {
+                            if log_level::log_enabled(kind) {
+                                let event_config = RenderConfig {
+                                    color: false,
+                                    timestamps: false,
+                                    bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                                    indent_size: 2,
+                                };
+
+                                if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
+                                    live_log::append(&rendered_event.main);
+                                    if let Some(detail) = rendered_event.detail {
+                                        live_log::append(&detail);
+                                    }
+                                }
                             }
                         }
                     }
@@ -536,28 +550,26 @@ where
 {
     let rt = get_runtime().await;
 
-    // Enter scope in the journal (same as scoped_async)
+    // Enter scope in the journal
     let scope_id = {
         let mut journal = rt.journal.lock().await;
         let parent = CURRENT_SCOPE.try_with(|s| *s).ok().flatten();
         journal.enter_scope(parent, name)
     };
 
-    // Run the user's future inside the task-local CURRENT_SCOPE
+    // Run the future inside task-local CURRENT_SCOPE
     let result = CURRENT_SCOPE
         .scope(Some(scope_id), async {
-            // Wrap in AssertUnwindSafe and catch unwind to mark abort if panic
             std::panic::AssertUnwindSafe(fut).catch_unwind().await
         })
         .await;
 
-    // Determine outcome
     let outcome = match &result {
         Ok(_) => Outcome::Success,
         Err(_) => Outcome::Aborted,
     };
 
-    // Exit scope and write header + events (same rendering as other functions)
+    // Exit scope and render only if at least one event passes log level
     {
         let mut journal = rt.journal.lock().await;
         journal.exit_scope(scope_id, outcome);
@@ -565,37 +577,54 @@ where
         if let Some(scope_ref) = journal.get_scope(scope_id) {
             use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
             use super::live_log;
-            use crate::RecordKind;
+            use crate::{RecordKind, runtime::log_level};
 
-            let config = RenderConfig {
-                color: false,
-                timestamps: true,
-                bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
-                indent_size: 2,
-            };
+            // Only render if at least one event is visible
+            let has_visible_events = journal.records().iter().any(|record| {
+                record.scope == Some(scope_id)
+                    && matches!(record.kind, RecordKind::Event { .. })
+                    && log_level::log_enabled(match &record.kind {
+                        RecordKind::Event { kind, .. } => *kind,
+                        _ => crate::EventKind::Error,
+                    })
+            });
 
-            // Scope header
-            let rendered = render_scope_header(&journal, scope_ref, &config);
-            live_log::append(&rendered.header);
+            if has_visible_events {
+                let config = RenderConfig {
+                    color: false,
+                    timestamps: true,
+                    bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                    indent_size: 2,
+                };
 
-            // All events in that scope
-            let scope_depth = journal.scope_path(Some(scope_id)).len();
-            let indent_level = scope_depth.saturating_sub(1) + 1;
+                // Render header
+                let rendered = render_scope_header(&journal, scope_ref, &config);
+                live_log::append(&rendered.header);
 
-            for record in journal.records() {
-                if record.scope == Some(scope_id) {
-                    if matches!(record.kind, RecordKind::Event { .. }) {
-                        let event_config = RenderConfig {
-                            color: false,
-                            timestamps: false,
-                            bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
-                            indent_size: 2,
-                        };
+                // Render all events in this scope
+                let scope_depth = journal.scope_path(Some(scope_id)).len();
+                let indent_level = scope_depth.saturating_sub(1) + 1;
 
-                        if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
-                            live_log::append(&rendered_event.main);
-                            if let Some(detail) = rendered_event.detail {
-                                live_log::append(&detail);
+                for record in journal.records() {
+                    if record.scope == Some(scope_id) {
+                        if let RecordKind::Event { .. } = record.kind {
+                            if log_level::log_enabled(match &record.kind {
+                                RecordKind::Event { kind, .. } => *kind,
+                                _ => crate::EventKind::Error,
+                            }) {
+                                let event_config = RenderConfig {
+                                    color: false,
+                                    timestamps: false,
+                                    bullet: if cfg!(windows) { "*".to_string() } else { "•".to_string() },
+                                    indent_size: 2,
+                                };
+
+                                if let Some(rendered_event) = render_event(record, &event_config, indent_level) {
+                                    live_log::append(&rendered_event.main);
+                                    if let Some(detail) = rendered_event.detail {
+                                        live_log::append(&detail);
+                                    }
+                                }
                             }
                         }
                     }
@@ -604,9 +633,9 @@ where
         }
     }
 
-    // Return or resume unwind on panic
     match result {
         Ok(v) => v,
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
+

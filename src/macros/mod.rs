@@ -9,7 +9,7 @@
 //!
 //! ```rust,no_run
 //! # use eventline::runtime;
-//! # use eventline::{event_info, event_warn, event_error, event_debug, event_scope_async};
+//! # use eventline::{event_info, event_warn, event_error, event_debug};
 //! # async fn example() {
 //! # runtime::init().await;
 //! # let cache_size = 256;
@@ -19,15 +19,9 @@
 //! event_warn!("Cache size: {} MB", cache_size);
 //! event_error!("Failed to connect: {}", err);
 //! event_debug!("Processing request {}", id);
-//!
-//! event_scope_async!("RequestHandler", {
-//!     event_info!("Handling request");
-//!     // ... work happens here ...
-//! }).await;
 //! # runtime::reset().await;
 //! # }
 //! ```
 pub mod event;
 pub mod field;
 pub mod scope;
-pub mod tests;

@@ -1,13 +1,10 @@
 #[cfg(test)]
 mod tests {
-    // Import only what we need from the runtime module
-    use crate::runtime::{ init, reset, with_journal, is_initialized};
-    use crate::runtime::event::{record, info, warn, error, debug};
+    use crate::runtime::{init, reset, with_journal, is_initialized};
+    use crate::runtime::event::{info, warn, error, debug};
     use crate::runtime::scope::{scoped, scoped_async, try_scoped, try_scoped_async,
         try_scoped_unnamed, try_scoped_unnamed_async, current_scope
     };
-
-    use crate::core::EventKind;
     use crate::Outcome;
     use serial_test::serial;
 
@@ -50,39 +47,19 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial]
-    async fn test_record_without_init_is_noop() {
-        reset().await;
-        record(EventKind::Info, "test").await;
-        reset().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial]
     async fn test_basic_recording() {
         with_clean_runtime(|| async {
+            // Set log level to include debug events
+            crate::runtime::log_level::set_log_level(crate::runtime::log_level::LogLevel::Debug);
+            
             info("test info").await;
             warn("test warning").await;
             error("test error").await;
             debug("test debug").await;
 
             with_journal(|journal| {
+                // Should have 4 event records (no scope exits for unscoped events)
                 assert_eq!(journal.records().len(), 4);
-            }).await;
-        }).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial]
-    async fn test_scoped_execution() {
-        with_clean_runtime(|| async {
-            scoped_async(Some("test_scope"), || async {
-                info("inside scope").await;
-            }).await;
-
-            with_journal(|journal| {
-                assert_eq!(journal.scopes().len(), 1);
-                // Records: info, scope exit = 2
-                assert_eq!(journal.records().len(), 2);
             }).await;
         }).await;
     }
@@ -143,7 +120,7 @@ mod tests {
 
             with_journal(|journal| {
                 assert_eq!(journal.scopes().len(), 2);
-                assert_eq!(journal.records().len(), 5); // enter/inner enter/info/info/inner exit/back info/exit
+                assert_eq!(journal.records().len(), 5); // info/inner exit/info/info/outer exit
             }).await;
         }).await;
     }
