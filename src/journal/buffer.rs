@@ -172,6 +172,7 @@ impl JournalBuffer {
             kind: RecordKind::Event {
                 kind,
                 message: message.into(),
+                fields: crate::core::value::Fields::new(), // NEW - empty fields
             },
         });
 

@@ -3,6 +3,7 @@ mod tests {
     use crate::runtime;
     use crate::runtime::log_level::{set_log_level, LogLevel};
     use serial_test::serial;
+    use tokio::time::Duration;
 
     use crate::{
         event_info, 
@@ -26,18 +27,23 @@ mod tests {
         runtime::init().await;
         set_log_level(LogLevel::Debug);
     }
-
+  
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial]
     async fn test_event_macros() {
         safe_reset().await;
-        event_info!("test").await;
-        event_warn!("test {}", 42).await;
-        event_error!("test").await;
-        event_debug!("test").await;
+
+        try_scope_async!("test", {
+            event_info!("test");
+            event_warn!("test {}", 42);
+            event_error!("test");
+            event_debug!("test");
+        }).await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
         runtime::with_journal(|journal| {
-            assert_eq!(journal.records().len(), 4);
+            assert_eq!(journal.records().len(), 5);
         }).await;
 
         runtime::reset().await;
@@ -48,7 +54,7 @@ mod tests {
     async fn test_scope_macro() {
         safe_reset().await;
         event_scope!("test_scope", { 
-            event_info!("inside").await; 
+            event_info!("inside"); 
         }).await;
 
         runtime::with_journal(|journal| {
@@ -64,9 +70,9 @@ mod tests {
     async fn test_scope_async_macro() {
         safe_reset().await;
         try_scope_async!("test_scope_async", {
-            event_info!("inside async").await;
+            event_info!("inside async");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            event_info!("after delay").await;
+            event_info!("after delay");
         }).await;
 
         runtime::with_journal(|journal| {
@@ -83,7 +89,7 @@ mod tests {
     async fn test_unnamed_scope_macro() {
         safe_reset().await;
         event_scope_unnamed!(async { 
-            event_info!("inside").await; 
+            event_info!("inside"); 
         }).await;
 
         runtime::with_journal(|journal| {
@@ -99,7 +105,7 @@ mod tests {
     async fn test_unnamed_scope_async_macro() {
         safe_reset().await;
         event_scope_unnamed_async!({
-            event_info!("inside async unnamed").await;
+            event_info!("inside async unnamed");
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }).await;
 
@@ -125,7 +131,7 @@ mod tests {
     async fn test_try_scope_macro_with_init() {
         safe_reset().await;
         try_scope!("test", async { 
-            event_info!("inside").await; 
+            event_info!("inside"); 
         }).await;
 
         runtime::with_journal(|journal| {
@@ -175,13 +181,13 @@ mod tests {
         safe_reset().await;
         
         event_scope_async!("outer", {
-            event_info!("outer scope").await;
+            event_info!("outer scope");
             
             event_scope_async!("inner", {
-                event_info!("inner scope").await;
+                event_info!("inner scope");
             }).await;
             
-            event_info!("back to outer").await;
+            event_info!("back to outer");
         }).await;
 
         runtime::with_journal(|journal| {

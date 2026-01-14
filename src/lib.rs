@@ -45,12 +45,12 @@
 //! runtime::init().await;
 //!
 //! // Log from anywhere
-//! event_info!("Application started").await;
+//! event_info!("Application started");
 //!
 //! // Create scoped contexts
 //! event_scope!("DatabaseMigration", {
-//!     event_info!("Applying migrations").await;
-//!     event_info!("Migration complete").await;
+//!     event_info!("Applying migrations");
+//!     event_info!("Migration complete");
 //! }).await;
 //!
 //! // Access the journal for rendering or custom output
@@ -96,3 +96,4 @@ pub use core::{RecordId, ScopeId};
 pub use render::{render_journal_tree, render_summary};
 pub use core::{Record, RecordKind};
 pub use core::{Scope, ScopeGuard};
+pub use core::{Value, Fields, IntoFields};

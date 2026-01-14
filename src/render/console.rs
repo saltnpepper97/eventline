@@ -10,6 +10,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::core::event_kind::EventKind;
+use crate::Fields;
 
 #[cfg(feature = "colour")]
 use crate::render::colour::{RESET, GREEN, RED, YELLOW, BLUE};
@@ -192,4 +193,26 @@ mod tests {
         enable_console_color(false);
         assert!(!is_console_color_enabled());
     }
+}
+
+/// Print an event with structured fields to console.
+pub fn print_event_with_fields(kind: EventKind, message: &str, fields: &Fields) {
+    if fields.is_empty() {
+        print_event(kind, message);
+        return;
+    }
+
+    // Format: "INFO: User logged in [user_id=12345, ip=192.168.1.1]"
+    let fields_str: Vec<String> = fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect();
+    
+    let full_message = if fields_str.is_empty() {
+        message.to_string()
+    } else {
+        format!("{} [{}]", message, fields_str.join(", "))
+    };
+
+    print_event(kind, &full_message);
 }

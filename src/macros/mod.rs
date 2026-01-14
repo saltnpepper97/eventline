@@ -15,13 +15,13 @@
 //! # let cache_size = 256;
 //! # let err = "connection failed";
 //! # let id = 42;
-//! event_info!("Server started on port {}", 8080).await;
-//! event_warn!("Cache size: {} MB", cache_size).await;
-//! event_error!("Failed to connect: {}", err).await;
-//! event_debug!("Processing request {}", id).await;
+//! event_info!("Server started on port {}", 8080);
+//! event_warn!("Cache size: {} MB", cache_size);
+//! event_error!("Failed to connect: {}", err);
+//! event_debug!("Processing request {}", id);
 //!
 //! event_scope_async!("RequestHandler", {
-//!     event_info!("Handling request").await;
+//!     event_info!("Handling request");
 //!     // ... work happens here ...
 //! }).await;
 //! # runtime::reset().await;

@@ -6,6 +6,7 @@
 use super::{RecordId, ScopeId};
 use super::Outcome;
 use super::EventKind;
+use super::value::{Fields, Value};
 
 /// The type of a journal record.
 #[derive(Debug, Clone)]
@@ -14,6 +15,7 @@ pub enum RecordKind {
     Event {
         kind: EventKind,
         message: String,
+        fields: Fields,
     },
     /// Marks the exit of a scope.
     ScopeExit {
@@ -21,7 +23,6 @@ pub enum RecordKind {
         exited_at: u64,
     },
 }
-
 
 /// A single journal entry, either an event or a scope exit.
 #[derive(Debug, Clone)]
@@ -34,4 +35,19 @@ pub struct Record {
     pub time: u64,
     /// The kind of record: Event or ScopeExit.
     pub kind: RecordKind,
+}
+
+impl Record {
+    /// Get the fields from this record if it's an Event.
+    pub fn fields(&self) -> Option<&Fields> {
+        match &self.kind {
+            RecordKind::Event { fields, .. } => Some(fields),
+            _ => None,
+        }
+    }
+
+    /// Get a specific field value by name.
+    pub fn get_field(&self, name: &str) -> Option<&Value> {
+        self.fields().and_then(|f| f.get(name))
+    }
 }

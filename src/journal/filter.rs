@@ -232,11 +232,11 @@ impl EventFilter {
 
     /// Check if a record matches this event filter.
     ///
-    /// Returns `false` for non-event records (e.g., `ScopeExit`).
+    /// Returns `false` for non-event records (e.g., `ScopeExit`).   
     pub fn matches(&self, record: &Record) -> bool {
         // Only match Event records
         let (kind, message) = match &record.kind {
-            RecordKind::Event { kind, message } => (kind, message),
+            RecordKind::Event { kind, message, .. } => (kind, message), // Changed: added ..
             RecordKind::ScopeExit { .. } => return false,
         };
 

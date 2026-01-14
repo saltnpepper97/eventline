@@ -464,4 +464,33 @@ pub async fn runtime_summary(color: bool, filter: Option<&Filter>, per_scope: bo
     }
 }
 
-
+/// Spawn a detached task for fire-and-forget operations like logging.
+///
+/// This allows logging macros to avoid `.await` by spawning background tasks.
+/// The task is detached, meaning we don't wait for its completion.
+///
+/// # Note
+///
+/// Since eventline uses Tokio as indicated by the existing code, this function
+/// requires a Tokio runtime to be active (which is typically the case when using
+/// the `#[tokio::main]` attribute).
+///
+/// # Panics
+///
+/// Panics if called outside of a Tokio runtime context.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use eventline::runtime;
+///
+/// runtime::spawn_detached(async {
+///     runtime::info("Background log message".to_string()).await;
+/// });
+/// ```
+pub fn spawn_detached<F>(future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(future);
+}

@@ -10,6 +10,7 @@ Eventline records *what happened*, *when it happened*, and *in what causal conte
 
 - **Append-only journal** — never mutates or removes records
 - **Scoped execution** — track outcomes and durations
+- **Structured data** — attach key-value fields to events for rich context
 - **Runtime log levels** — filter events globally (Debug, Info, Warning, Error)
 - **Dual output mode** — journal + optional real-time console printing
 - **Live logging** — automatic, timestamped append to disk
@@ -54,18 +55,18 @@ async fn main() {
     runtime::enable_console_color(true).await;
 
     // Fire-and-forget logging
-    event_info!("Async logging example").await;
+    event_info!("Async logging example");
 
     // Named async scope
     event_scope_async!("AsyncTask", {
-        event_info!("Inside async scope").await;
+        event_info!("Inside async scope");
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }).await;
+    });
 
     // Unnamed async scope (note: requires 'async' keyword)
     event_scope_unnamed!(async {
-        event_info!("Unnamed async work").await;
-    }).await;
+        event_info!("Unnamed async work");
+    });
 }
 ```
 
@@ -88,6 +89,38 @@ journal.scoped(None, Some("Task"), |journal, scope| {
 // Use JournalWriter to output the journal
 let writer = JournalWriter::new();
 // writer.write_to(&mut std::fs::File::create("events.log")?, &journal)?;
+```
+
+### Structured Event Example
+
+This example demonstrates how to record an event with structured fields using `eventline`.
+
+```rust
+use eventline::Journal;
+use eventline::core::{Fields, Value, EventKind};
+
+fn main() {
+    let mut journal = Journal::new();
+
+    // Build structured fields
+    let mut fields = Fields::new();
+    fields.insert("user_id".to_string(), Value::from(12345));
+    fields.insert("action".to_string(), Value::from("login"));
+    fields.insert("success".to_string(), Value::from(true));
+
+    // Record an event with both message and structured fields
+    journal.record_event(
+        None,                         // No specific scope
+        EventKind::Info,              // Event type
+        "User login attempt",         // Human-readable message
+        fields                        // Structured data
+    );
+
+    // You can inspect later
+    for record in journal.records() {
+        println!("{:?}", record);
+    }
+}
 ```
 
 ---
@@ -159,8 +192,8 @@ use std::path::PathBuf;
 
 runtime::enable_live_logging(PathBuf::from("/tmp/eventline.log")).await;
 
-event_info!("This event will be written to the live log file automatically").await;
-event_warn!("Timestamped and indented according to scope depth").await;
+event_info!("This event will be written to the live log file automatically");
+event_warn!("Timestamped and indented according to scope depth");
 ```
 
 ---
@@ -175,7 +208,7 @@ Events are recorded but not printed:
 runtime::init().await;
 runtime::enable_console_output(false).await; // Default
 
-event_info!("Silent").await; // Recorded, not printed
+event_info!("Silent"); // Recorded, not printed
 
 // Later, examine the journal
 runtime::with_journal(|journal| {
@@ -190,9 +223,9 @@ runtime::init().await;
 runtime::enable_console_output(true).await;
 runtime::enable_console_color(true).await;
 
-event_info!("Starting").await;  // Journaled + printed
-event_warn!("Warning").await;   // Journaled + printed in yellow
-event_error!("Error").await;    // Journaled + printed to stderr in red
+event_info!("Starting");  // Journaled + printed
+event_warn!("Warning");   // Journaled + printed in yellow
+event_error!("Error");    // Journaled + printed to stderr in red
 ```
 
 **Benefits:**
@@ -261,7 +294,6 @@ buffer.exit_scope(scope, Outcome::Success);
 journal.flush_buffer(buffer); // Atomic ID rebase
 ```
 
-
 ### Custom Output
 
 ```rust
@@ -289,18 +321,18 @@ JournalWriter::new()
 
 ```rust
 event_scope!("Deployment", {
-    event_info!("Starting deployment").await;
+    event_info!("Starting deployment");
     
     event_scope!("BuildImage", {
-        event_info!("Building Docker image").await;
-    }).await;
+        event_info!("Building Docker image");
+    });
     
     event_scope!("PushRegistry", {
-        event_info!("Pushing to registry").await;
-    }).await;
+        event_info!("Pushing to registry");
+    });
     
-    event_info!("Deployment complete").await;
-}).await;
+    event_info!("Deployment complete");
+});
 ```
 
 ### Environment Variable Support
@@ -379,7 +411,7 @@ async fn main() {
         }
     }
 
-    event_info!("Application started").await;
+    event_info!("Application started");
     
     // Your application logic here
     
@@ -409,7 +441,7 @@ async fn test_task() {
     runtime::init().await;
     runtime::enable_console_output(false).await; // Quiet in tests
     
-    event_info!("test").await;
+    event_info!("test");
     
     runtime::with_journal(|journal| {
         assert_eq!(journal.records().len(), 1);
@@ -425,7 +457,7 @@ async fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.3.22"
+eventline = "0.4.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -433,7 +465,7 @@ Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.3.22", features = ["colour"] }
+eventline = { version = "0.4.0", features = ["colour"] }
 ```
 
 ---
@@ -441,24 +473,9 @@ eventline = { version = "0.3.22", features = ["colour"] }
 ## Roadmap
 
 - Custom formatters (JSON, binary)
-- Structured data (key-value pairs)
 - Zero-copy query interface
 - Tag-based filtering
 - systemd journal integration
-
----
-
-## Version 0.3.x — Highlights
-
-- **Canonical rendering format** — unified output across console, live log, and journal replay
-- **Simplified console output** — clean format for development without visual noise
-- **Structured live logging** — full canonical format with scope headers and timestamps
-- **Async runtime support** — `init().await`, `scoped_async()`, fire-and-forget logging from async tasks
-- **Live logging** — automatic timestamped file append
-- **Dual output mode** — console + journal, fully async-safe
-- **Scoped event macros** — single-line events with scope context (`event_info_scoped!`, etc.)
-- **Consistent formatting** — arrow rule enforced (no duplication)
-- **Improved CLI integration** — verbose, quiet, color flags respected
 
 ---
 

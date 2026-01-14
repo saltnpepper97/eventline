@@ -57,19 +57,17 @@ mod validation_tests {
     fn test_event_kind_is_preserved() {
         let mut journal = Journal::new();
         let scope = journal.enter_scope_unnamed(None);
-
         journal.record_with_kind(
             Some(scope),
             EventKind::Warning,
             "this is a warning",
         );
-
         let record = journal.records().last().unwrap();
-
         match &record.kind {
-            RecordKind::Event { kind, message } => {
+            RecordKind::Event { kind, message, fields } => {
                 assert_eq!(*kind, EventKind::Warning);
                 assert_eq!(message, "this is a warning");
+                assert!(fields.is_empty());
             }
             _ => panic!("Expected RecordKind::Event"),
         }

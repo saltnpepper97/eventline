@@ -28,6 +28,7 @@ use crate::{Record, RecordKind};
 use crate::EventKind;
 use crate::{RecordId, ScopeId};
 use crate::Scope;
+use crate::core::value::Fields; // NEW
 
 /// The main journal structure for recording scopes and events.
 ///
@@ -423,6 +424,53 @@ impl Journal {
         self.record_with_kind(scope, EventKind::Info, message)
     }
 
+    /// Record an event with structured fields.
+    ///
+    /// This is the most flexible event-recording method, accepting both a message
+    /// and structured key-value fields.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use eventline::Journal;
+    /// use eventline::core::{EventKind, Fields, Value};
+    ///
+    /// let mut journal = Journal::new();
+    /// let mut fields = Fields::new();
+    /// fields.insert("user_id".into(), Value::from(12345));
+    /// fields.insert("action".into(), Value::from("login"));
+    ///
+    /// journal.record_event(None, EventKind::Info, "User logged in", fields);
+    /// ```
+    pub fn record_event(
+        &mut self,
+        scope: Option<ScopeId>,
+        kind: EventKind,
+        message: impl Into<String>,
+        fields: Fields,
+    ) -> RecordId {
+        debug_assert!(
+            scope.map_or(true, |s| (s.0 as usize) < self.scopes.len()),
+            "Attempted to record event in non-existent scope {:?}",
+            scope
+        );
+
+        let id = RecordId(self.records.len() as u64);
+
+        self.records.push(Record {
+            id,
+            scope,
+            time: current_millis(),
+            kind: RecordKind::Event {
+                kind,
+                message: message.into(),
+                fields,
+            },
+        });
+
+        id
+    }
+
     /// Record an event with an explicit [`EventKind`], optionally associated
     /// with a scope.
     ///
@@ -468,26 +516,7 @@ impl Journal {
         kind: EventKind,
         message: impl Into<String>,
     ) -> RecordId {
-        // DEBUG-ONLY: Validate scope exists in this journal
-        debug_assert!(
-            scope.map_or(true, |s| (s.0 as usize) < self.scopes.len()),
-            "Attempted to record event in non-existent scope {:?}",
-            scope
-        );
-
-        let id = RecordId(self.records.len() as u64);
-
-        self.records.push(Record {
-            id,
-            scope,
-            time: current_millis(),
-            kind: RecordKind::Event {
-                kind,
-                message: message.into(),
-            },
-        });
-
-        id
+        self.record_event(scope, kind, message, Fields::new())
     }
 
     /// Immutable access to all scopes.

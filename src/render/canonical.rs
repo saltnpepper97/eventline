@@ -182,17 +182,16 @@ pub fn render_scope_header(
 
 /// Render an event in canonical format.
 ///
-/// Format: `  • kind      message`
+/// Format: `  • kind      message [key=val, key2=val2]`
 ///
-/// **Important**: Detail lines (arrows) are NOT rendered here unless you have
-/// structured detail to add. The current implementation doesn't support structured
-/// details yet, so arrows are omitted by design.
+/// Fields are rendered inline in brackets to maintain grep-friendliness.
+/// Arrow lines are reserved for future use (e.g., stack traces, detailed errors).
 pub fn render_event(
     record: &crate::Record,
     config: &RenderConfig,
     indent_level: usize,
 ) -> Option<RenderedEvent> {
-    if let RecordKind::Event { kind, message } = &record.kind {
+    if let RecordKind::Event { kind, message, fields } = &record.kind {
         let indent = " ".repeat(config.indent_size * indent_level);
 
         // Format kind label (aligned, lowercase)
@@ -213,11 +212,6 @@ pub fn render_event(
                 EventKind::Debug => format!("{}debug{}", BLUE, RESET),
             };
 
-            // Color codes don't count toward visual width
-            // "warning" = 7 chars, needs 2 spaces to reach 9
-            // "error" = 5 chars, needs 4 spaces to reach 9
-            // "debug" = 5 chars, needs 4 spaces to reach 9
-            // "info" = 4 chars, needs 5 spaces to reach 9
             let padding = match kind {
                 EventKind::Warning => "  ",
                 EventKind::Error => "    ",
@@ -232,10 +226,24 @@ pub fn render_event(
         #[cfg(not(feature = "colour"))]
         let display_label = kind_label.to_string();
 
-        let main = format!("{}{} {} {}", indent, config.bullet, display_label, message);
+        // Format fields inline if present
+        let fields_str = if !fields.is_empty() {
+            let field_pairs: Vec<String> = fields
+                .iter()
+                .map(|(k, v)| format!("{}={}", k, v))
+                .collect();
+            format!(" [{}]", field_pairs.join(", "))
+        } else {
+            String::new()
+        };
 
-        // No arrow/detail lines for now - they would only repeat the message
-        // Future: Add when structured details (like errno, addr, etc.) exist
+        let main = format!(
+            "{}{} {} {}{}",
+            indent, config.bullet, display_label, message, fields_str
+        );
+
+        // No detail/arrow lines for now
+        // Future: could use for stack traces or detailed error context
 
         Some(RenderedEvent {
             main,
@@ -264,9 +272,11 @@ mod tests {
         assert!(rendered.header.contains("→ Success"));
         assert!(rendered.header.contains("ms)"));
     }
-
+ 
     #[test]
     fn test_event_format() {
+        use crate::core::value::Fields;
+        
         let _journal = Journal::new();
         let record = crate::Record {
             id: RecordId(1),
@@ -274,6 +284,7 @@ mod tests {
             kind: RecordKind::Event {
                 kind: EventKind::Warning,
                 message: "test message".to_string(),
+                fields: Fields::new(), // NEW
             },
             time: 0,
         };
@@ -286,9 +297,11 @@ mod tests {
         assert!(rendered.main.contains("test message"));
         assert!(rendered.detail.is_none());
     }
-
+    
     #[test]
     fn test_no_arrow_duplication() {
+        use crate::core::value::Fields;
+        
         // Verify that we don't create arrow lines that just repeat the message
         let _journal = Journal::new();
         let record = crate::Record {
@@ -297,6 +310,7 @@ mod tests {
             kind: RecordKind::Event {
                 kind: EventKind::Error,
                 message: "failed to bind socket".to_string(),
+                fields: Fields::new(), // NEW
             },
             time: 0,
         };
