@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "eventline"
-version = "0.4.2"
+version = "0.4.21"
 dependencies = [
  "chrono",
  "futures",
