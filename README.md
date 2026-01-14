@@ -96,33 +96,34 @@ let writer = JournalWriter::new();
 This example demonstrates how to record an event with structured fields using `eventline`.
 
 ```rust
-use eventline::Journal;
-use eventline::core::{Fields, Value, EventKind};
+use eventline::runtime;
+use eventline::core::{Fields, Value};
+use eventline::macros::fields;
+use eventline::macros::event_info_fields;
 
-fn main() {
-    let mut journal = Journal::new();
+#[tokio::main]
+async fn main() {
+    // Initialize the runtime
+    runtime::init().await;
 
-    // Build structured fields
-    let mut fields = Fields::new();
-    fields.insert("user_id".to_string(), Value::from(12345));
-    fields.insert("action".to_string(), Value::from("login"));
-    fields.insert("success".to_string(), Value::from(true));
+    // Build structured fields using the helper macro
+    let f = fields!({
+        "user_id" => 12345,
+        "action" => "login",
+        "success" => true
+    });
 
-    // Record an event with both message and structured fields
-    journal.record_event(
-        None,                         // No specific scope
-        EventKind::Info,              // Event type
-        "User login attempt",         // Human-readable message
-        fields                        // Structured data
-    );
+    // Fire-and-forget info event with structured fields (no await needed)
+    event_info_fields!("User login attempt", f);
 
-    // You can inspect later
-    for record in journal.records() {
-        println!("{:?}", record);
-    }
+    // Wait a tiny bit to let the detached task complete
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Shutdown runtime cleanly (optional for tests)
+    runtime::reset().await;
 }
-```
 
+```
 ---
 
 ### Console Output (Simple Format)
@@ -457,7 +458,7 @@ async fn test_task() {
 
 ```toml
 [dependencies]
-eventline = "0.4.0"
+eventline = "0.4.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -465,7 +466,7 @@ Optional features:
 
 ```toml
 [dependencies]
-eventline = { version = "0.4.0", features = ["colour"] }
+eventline = { version = "0.4.1", features = ["colour"] }
 ```
 
 ---

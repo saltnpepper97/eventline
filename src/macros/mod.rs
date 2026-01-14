@@ -28,5 +28,6 @@
 //! # }
 //! ```
 pub mod event;
+pub mod field;
 pub mod scope;
 pub mod tests;
