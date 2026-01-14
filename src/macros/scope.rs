@@ -228,3 +228,232 @@ macro_rules! scoped_eventline {
     }};
 }
 
+// Keep the scope macros unchanged - they return futures that should be awaited
+// for proper scope lifetime management
+
+/// Execute code within a named scope (async version).
+///
+/// Automatically enters/exits the scope, records events, and restores previous scope.
+/// Panics if runtime not initialized. Use [`try_scope!`] to avoid panicking.
+///
+/// Note: This returns a Future that must be awaited.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_scope, event_info};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// # async fn run_migrations() {}
+/// event_scope!("DatabaseMigration", {
+///     event_info!("Starting migration");
+///     run_migrations().await;
+///     event_info!("Migration complete");
+/// }).await;
+/// # runtime::reset().await;
+/// # }
+/// ```
+#[macro_export]
+macro_rules! event_scope {
+    ($name:expr, $body:block) => {
+        $crate::runtime::scope::scoped_async::<String, _, _, _>(Some($name.to_string()), || async move $body)
+    };
+}
+
+/// Execute async code within a named scope.
+///
+/// This is the async version of `event_scope!`. It properly handles async closures
+/// and futures, ensuring scope tracking works correctly across await points.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_scope_async, event_info};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// event_scope_async!("AsyncTask", {
+///     event_info!("Starting async work");
+///     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+///     event_info!("Async work complete");
+/// }).await;
+/// # runtime::reset().await;
+/// # }
+/// ```
+#[macro_export]
+macro_rules! event_scope_async {
+    ($name:expr, $body:block) => {
+        {
+            // wrap in async move to take ownership of outer vars
+            let fut = async move $body;
+            $crate::runtime::scope::scoped_async(Some($name.to_string()), || fut)
+        }
+    };
+}
+
+/// Execute code within a named scope, without panicking if runtime is uninitialized.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::try_scope;
+/// # use eventline::runtime;
+/// # async fn example() {
+/// let result = try_scope!("OptionalLogging", {
+///     42
+/// }).await;
+/// assert_eq!(result, 42);
+/// # }
+/// ```
+#[macro_export]
+macro_rules! try_scope {
+    ($name:expr, async $body:block) => {
+        async {
+            if $crate::runtime::is_initialized().await {
+                $crate::runtime::scope::scoped_async(Some($name), || async move $body).await
+            } else {
+                async move $body.await
+            }
+        }
+    };
+    ($name:expr, $body:block) => {
+        async {
+            $crate::runtime::try_scoped(Some($name), || $body).await
+        }
+    };
+}
+
+/// Execute async code within a named scope, without panicking if runtime is uninitialized.
+///
+/// This is the async version of `try_scope!`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::try_scope_async;
+/// # use eventline::runtime;
+/// # async fn example() {
+/// let result = try_scope_async!("OptionalLogging", {
+///     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+///     42
+/// }).await;
+/// assert_eq!(result, 42);
+/// # }
+/// ```
+#[macro_export]
+macro_rules! try_scope_async {
+    ($name:expr, $body:block) => {
+        async move {
+            if $crate::runtime::is_initialized().await {
+                $crate::runtime::scope::scoped_async(Some($name), move || async move $body).await
+            } else {
+                $body
+            }
+        }
+    };
+}
+
+/// Execute code within an unnamed scope.
+///
+/// Useful for scope structure without naming overhead. Panics if runtime not initialized.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_scope_unnamed, event_info};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// event_scope_unnamed!(async {
+///     event_info!("Anonymous work");
+/// }).await;
+/// # runtime::reset().await;
+/// # }
+/// ```
+#[macro_export]
+macro_rules! event_scope_unnamed {
+    (async $body:block) => {
+        $crate::runtime::scope::scoped_async::<String, _, _, _>(None, || async move $body)
+    };
+}
+
+/// Execute async code within an unnamed scope.
+///
+/// This is the async version of `event_scope_unnamed!`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::{event_scope_unnamed_async, event_info};
+/// # use eventline::runtime;
+/// # async fn example() {
+/// # runtime::init().await;
+/// event_scope_unnamed_async!({
+///     event_info!("Anonymous async work");
+/// }).await;
+/// # runtime::reset().await;
+/// # }
+/// ```
+#[macro_export]
+macro_rules! event_scope_unnamed_async {
+    ($body:block) => {
+        $crate::runtime::scope::scoped_async::<String, _, _, _>(None, || async move $body)
+    };
+}
+
+/// Execute code within an unnamed scope, without panicking if runtime is uninitialized.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::try_scope_unnamed;
+/// # use eventline::runtime;
+/// # async fn example() {
+/// let result = try_scope_unnamed!(async {
+///     42
+/// }).await;
+/// assert_eq!(result, 42);
+/// # }
+/// ```
+#[macro_export]
+macro_rules! try_scope_unnamed {
+    (async $body:block) => {
+        async {
+            if $crate::runtime::is_initialized().await {
+                $crate::runtime::scope::scoped_async::<String, _, _, _>(None, || async move $body).await
+            } else {
+                async move $body.await
+            }
+        }
+    };
+    ($body:block) => {
+        async {
+            $crate::runtime::try_scoped_unnamed(|| $body).await
+        }
+    };
+}
+
+/// Execute async code within an unnamed scope, without panicking if runtime is uninitialized.
+///
+/// This is the async version of `try_scope_unnamed!`.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// # use eventline::try_scope_unnamed_async;
+/// # use eventline::runtime;
+/// # async fn example() {
+/// let result = try_scope_unnamed_async!({
+///     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+///     42
+/// }).await;
+/// assert_eq!(result, 42);
+/// # }
+/// ```
+#[macro_export]
+macro_rules! try_scope_unnamed_async {
+    ($body:block) => {
+        $crate::runtime::scope::try_scoped_unnamed_async(|| async move $body)
+    };
+}
