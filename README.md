@@ -6,7 +6,6 @@ Structured journaling + logging for Rust, with scopes you can replay.
 ![License](https://img.shields.io/badge/License-MIT-E5534B?style=for-the-badge)
 ![Rust](https://img.shields.io/badge/Rust-1.90%2B-orange?style=for-the-badge&logo=rust&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Active-28A745?style=for-the-badge)
-![Focus](https://img.shields.io/badge/Focus-Structured%20Logging-4B8BBE?style=for-the-badge)
 
 eventline records a complete, append-only execution history (events + scopes), while letting you control what gets emitted to console/files via log level and sink toggles.
 
