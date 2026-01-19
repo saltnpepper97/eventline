@@ -1,42 +1,72 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 
-/// Defines the runtime log level.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum LogLevel {
-    Debug = 0,
-    Info = 1,
-    Warning = 2,
-    Error = 3,
-}
+use crate::core::{EventKind, Outcome, Record, RecordKind};
 
-/// Global runtime log level.
-static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
-
-/// Set the current runtime log level.
+/// Global log-level threshold for *emission* (writers/console).
 ///
-/// Only events at or above this level will be recorded by macros.
-pub fn set_log_level(level: LogLevel) {
-    LOG_LEVEL.store(level as u8, Ordering::Relaxed);
+/// Important: this does NOT affect journaling/recording.
+/// Eventline always keeps the full structured record in-memory (and/or persisted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum LogLevel {
+    Debug = 10,
+    Info  = 20,
+    Warning  = 30,
+    Error = 40,
 }
 
-/// Get the current runtime log level.
+static GLOBAL_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
+
+/// Set the global log level used for writer emission.
+pub fn set_log_level(level: LogLevel) {
+    GLOBAL_LEVEL.store(level as u8, Ordering::Relaxed);
+}
+
+/// Read the current global log level.
 pub fn get_log_level() -> LogLevel {
-    match LOG_LEVEL.load(Ordering::Relaxed) {
-        0 => LogLevel::Debug,
-        1 => LogLevel::Info,
-        2 => LogLevel::Warning,
-        3 => LogLevel::Error,
+    match GLOBAL_LEVEL.load(Ordering::Relaxed) {
+        x if x == LogLevel::Debug as u8 => LogLevel::Debug,
+        x if x == LogLevel::Warning as u8 => LogLevel::Warning,
+        x if x == LogLevel::Error as u8 => LogLevel::Error,
         _ => LogLevel::Info,
     }
 }
 
-/// Check whether a given `EventKind` should be logged at the current level.
-pub fn log_enabled(kind: crate::core::EventKind) -> bool {
-    let level = get_log_level();
-    match kind {
-        crate::core::EventKind::Debug => level <= LogLevel::Debug,
-        crate::core::EventKind::Info => level <= LogLevel::Info,
-        crate::core::EventKind::Warning => level <= LogLevel::Warning,
-        crate::core::EventKind::Error => level <= LogLevel::Error,
+/// Decide whether a record should be emitted to writers given current log level.
+///
+/// Rules (solid defaults):
+/// - Event records: map EventKind -> LogLevel threshold.
+/// - ScopeExit records: emit at Info for success, Warn/Error for non-success (keeps failures visible).
+pub fn enabled_for_record(record: &Record) -> bool {
+    let threshold = get_log_level();
+    let record_level = record_log_level(record);
+    record_level >= threshold
+}
+
+/// Compute a record’s effective log level for emission.
+pub fn record_log_level(record: &Record) -> LogLevel {
+    match &record.kind {
+        RecordKind::Event { kind, .. } => event_kind_level(*kind),
+        RecordKind::ScopeExit { outcome, .. } => outcome_level(*outcome),
+        // If you later add more record variants, pick sensible defaults here.
     }
 }
+
+fn event_kind_level(kind: EventKind) -> LogLevel {
+    // Adjust if your EventKind differs, but this is the typical mapping.
+    match kind {
+        EventKind::Debug => LogLevel::Debug,
+        EventKind::Info  => LogLevel::Info,
+        EventKind::Warning  => LogLevel::Warning,
+        EventKind::Error => LogLevel::Error,
+    }
+}
+
+fn outcome_level(outcome: Outcome) -> LogLevel {
+    match outcome {
+        Outcome::Success => LogLevel::Debug,
+        Outcome::Aborted => LogLevel::Warning,
+        Outcome::Failure => LogLevel::Error,
+    }
+}
+

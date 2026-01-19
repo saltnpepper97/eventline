@@ -1,282 +1,177 @@
-use std::io::Write;
-use super::Journal;
-use crate::render::canonical::{render_scope_header, render_event, RenderConfig};
-use super::{Record, RecordKind};
+use crate::core::{Record, Scope};
+use std::io::{self, Write};
+use std::fs::{File, OpenOptions};
+use std::path::Path;
+use std::sync::Arc;
+use parking_lot::Mutex;
 
-/// Writer for rendering journals to different output sinks.
-///
-/// Uses the canonical "Narrative Structured" format for all output destinations.
-/// Ensures file logs, stdout, and replay all look identical.
-///
-/// # Example
-/// ```
-/// use eventline::journal::{Journal, JournalWriter};
-/// use std::io;
-/// 
-/// let journal = Journal::new();
-/// let writer = JournalWriter::new();
-/// 
-/// // Write to stdout
-/// writer.write_to(&mut io::stdout(), &journal)?;
-/// 
-/// // Write to file
-/// let mut file = std::fs::File::create("output.log")?;
-/// writer.write_to(&mut file, &journal)?;
-/// # Ok::<(), std::io::Error>(())
-/// ```
-#[derive(Debug, Clone)]
-pub struct JournalWriter {
-    config: RenderConfig,
+use crate::render::{self, ConsoleStyle, FileStyle};
+
+/// Trait for writing journal records to various outputs.
+pub trait Writer: Send + Sync {
+    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()>;
+    fn flush(&mut self) -> io::Result<()>;
 }
 
-impl Default for JournalWriter {
+/// Writer that outputs to stdout (simple / human-facing).
+pub struct StdoutWriter {
+    handle: io::Stdout,
+    style: ConsoleStyle,
+}
+
+impl StdoutWriter {
+    pub fn new() -> Self {
+        Self {
+            handle: io::stdout(),
+            style: ConsoleStyle::default(),
+        }
+    }
+
+    pub fn with_style(style: ConsoleStyle) -> Self {
+        Self {
+            handle: io::stdout(),
+            style,
+        }
+    }
+}
+
+impl Default for StdoutWriter {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl JournalWriter {
-    /// Create a new journal writer with default canonical settings.
-    pub fn new() -> Self {
-        Self {
-            config: RenderConfig::default(),
-        }
+impl Writer for StdoutWriter {
+    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
+        let line = render::render_console(record, scope, self.style);
+        writeln!(self.handle, "{line}")
     }
 
-    /// Create a writer with color disabled.
-    pub fn no_color() -> Self {
-        Self {
-            config: RenderConfig::no_color(),
-        }
-    }
-
-    /// Create a writer without timestamps.
-    pub fn no_timestamps() -> Self {
-        Self {
-            config: RenderConfig::no_timestamps(),
-        }
-    }
-
-    /// Set a custom bullet character for event listings.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::journal::JournalWriter;
-    /// 
-    /// let writer = JournalWriter::new().with_bullet("-");
-    /// ```
-    pub fn with_bullet(mut self, bullet: impl Into<String>) -> Self {
-        self.config.bullet = bullet.into();
-        self
-    }
-
-    /// Enable or disable color in output.
-    pub fn with_color(mut self, color: bool) -> Self {
-        self.config.color = color;
-        self
-    }
-
-    /// Enable or disable timestamps in scope headers.
-    pub fn with_timestamps(mut self, timestamps: bool) -> Self {
-        self.config.timestamps = timestamps;
-        self
-    }
-
-    /// Internal method to prepare scope metadata for rendering.
-    /// 
-    /// Returns events grouped by scope for efficient lookup during rendering.
-    fn prepare_metadata<'a>(
-        &self,
-        journal: &'a Journal,
-    ) -> std::collections::HashMap<crate::journal::ScopeId, Vec<&'a Record>> {
-        use std::collections::HashMap;
-
-        let mut events_by_scope: HashMap<crate::journal::ScopeId, Vec<&Record>> = HashMap::new();
-
-        for record in journal.records() {
-            if let Some(scope) = record.scope {
-                if matches!(record.kind, RecordKind::Event { .. }) {
-                    events_by_scope.entry(scope).or_default().push(record);
-                }
-            }
-        }
-
-        events_by_scope
-    }
-
-    /// Internal method to render journal content directly to writers using canonical format.
-    /// 
-    /// This is the single source of truth for rendering logic.
-    /// Zero-allocation streaming for optimal performance.
-    fn render_to_writers(
-        &self,
-        writers: &mut [&mut dyn Write],
-        journal: &Journal,
-    ) -> std::io::Result<()> {
-        let events_by_scope = self.prepare_metadata(journal);
-
-        for scope in journal.scopes() {
-            // Render scope header using canonical format
-            let scope_header = render_scope_header(journal, scope, &self.config);
-
-            // Write scope header to all writers
-            for writer in writers.iter_mut() {
-                writeln!(writer, "{}", scope_header.header)?;
-            }
-
-            // Write scope events to all writers
-            if let Some(events) = events_by_scope.get(&scope.id) {
-                for event in events {
-                    if let Some(rendered) = render_event(event, &self.config, 1) {
-                        // Write main event line
-                        for writer in writers.iter_mut() {
-                            writeln!(writer, "{}", rendered.main)?;
-                        }
-
-                        // Write detail line if present (arrow rule: only if it adds information)
-                        if let Some(detail) = rendered.detail {
-                            for writer in writers.iter_mut() {
-                                writeln!(writer, "{}", detail)?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Flush all writers
-        for writer in writers.iter_mut() {
-            writer.flush()?;
-        }
-
-        Ok(())
-    }
-
-    /// Write the journal to a single output sink.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::journal::{Journal, JournalWriter};
-    /// use std::io;
-    /// 
-    /// let journal = Journal::new();
-    /// JournalWriter::new().write_to(&mut io::stdout(), &journal)?;
-    /// # Ok::<(), std::io::Error>(())
-    /// ```
-    pub fn write_to<W: Write>(&self, writer: &mut W, journal: &Journal) -> std::io::Result<()> {
-        self.render_to_writers(&mut [writer], journal)
-    }
-
-    /// Write the journal to multiple output sinks simultaneously.
-    ///
-    /// Useful for dual output: terminal and file logging at once.
-    /// Uses canonical format for all destinations, ensuring consistency.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::journal::{Journal, JournalWriter};
-    /// use std::io;
-    /// 
-    /// let journal = Journal::new();
-    /// let mut file = std::fs::File::create("output.log")?;
-    /// 
-    /// // Write to both stdout and file - both will look identical
-    /// JournalWriter::new().write_to_all(
-    ///     &mut [&mut io::stdout() as &mut dyn std::io::Write, &mut file as &mut dyn std::io::Write],
-    ///     &journal
-    /// )?;
-    /// # Ok::<(), std::io::Error>(())
-    /// ```
-    pub fn write_to_all(
-        &self,
-        writers: &mut [&mut dyn Write],
-        journal: &Journal,
-    ) -> std::io::Result<()> {
-        self.render_to_writers(writers, journal)
+    fn flush(&mut self) -> io::Result<()> {
+        self.handle.flush()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Outcome;
+/// Writer that appends to a file (detailed / audit-friendly).
+pub struct FileWriter {
+    file: File,
+    style: FileStyle,
+}
 
-    #[test]
-    fn test_journal_writer_custom_bullet() {
-        let writer = JournalWriter::new().with_bullet("-");
-        assert_eq!(writer.config.bullet, "-");
+impl FileWriter {
+    pub fn new(path: impl AsRef<Path>) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+
+        Ok(Self {
+            file,
+            style: FileStyle::default(),
+        })
     }
 
-    #[test]
-    fn test_journal_is_cloneable() {
-        let mut journal = Journal::new();
-        journal.enter_scope_unnamed(None);
-        
-        let _cloned = journal.clone();
-        // Journal can be cheaply cloned without output policy
+    pub fn with_style(path: impl AsRef<Path>, style: FileStyle) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)?;
+
+        Ok(Self { file, style })
+    }
+}
+
+impl Writer for FileWriter {
+    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
+        let line = render::render_file(record, scope, self.style);
+        writeln!(self.file, "{line}")
     }
 
-    #[test]
-    fn test_write_to_multiple_sinks() -> std::io::Result<()> {
-        let mut journal = Journal::new();
-        let scope = journal.enter_scope_unnamed(None);
-        journal.record(Some(scope), "test event");
-        journal.exit_scope(scope, Outcome::Success);
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
 
-        let mut buf1 = Vec::new();
-        let mut buf2 = Vec::new();
+/// Combines multiple writers.
+///
+/// Semantics:
+/// - All writers are attempted in order.
+/// - First error stops processing and is returned.
+/// - This keeps failure visible and avoids silent partial output.
+pub struct MultiWriter {
+    writers: Vec<Box<dyn Writer>>,
+}
 
-        JournalWriter::new().write_to_all(
-            &mut [&mut buf1 as &mut dyn Write, &mut buf2 as &mut dyn Write],
-            &journal
-        )?;
+impl MultiWriter {
+    pub fn new() -> Self {
+        Self { writers: Vec::new() }
+    }
 
-        assert_eq!(buf1, buf2);
-        assert!(!buf1.is_empty());
-        
-        // Verify canonical format
-        let output = String::from_utf8(buf1).unwrap();
-        assert!(output.contains("→"));
-        assert!(output.contains("(id="));
-        assert!(output.contains("ms)"));
+    pub fn add(&mut self, writer: impl Writer + 'static) {
+        self.writers.push(Box::new(writer));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.writers.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.writers.len()
+    }
+}
+
+impl Default for MultiWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Writer for MultiWriter {
+    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
+        for w in &mut self.writers {
+            w.write_record(record, scope)?;
+        }
         Ok(())
     }
 
-    #[test]
-    fn test_write_to_mixed_types() -> std::io::Result<()> {
-        use std::io::Cursor;
-        
-        let mut journal = Journal::new();
-        let scope = journal.enter_scope_unnamed(None);
-        journal.record(Some(scope), "mixed types test");
-        journal.exit_scope(scope, Outcome::Success);
-
-        let mut vec_writer = Vec::new();
-        let mut cursor_writer = Cursor::new(Vec::new());
-
-        // This works because we use &mut dyn Write
-        JournalWriter::new().write_to_all(
-            &mut [&mut vec_writer as &mut dyn Write, &mut cursor_writer as &mut dyn Write],
-            &journal
-        )?;
-
-        assert_eq!(vec_writer, cursor_writer.into_inner());
+    fn flush(&mut self) -> io::Result<()> {
+        for w in &mut self.writers {
+            w.flush()?;
+        }
         Ok(())
     }
+}
 
-    #[test]
-    fn test_no_color_output() -> std::io::Result<()> {
-        let mut journal = Journal::new();
-        let scope = journal.enter_scope_unnamed(None);
-        journal.record(Some(scope), "test");
-        journal.exit_scope(scope, Outcome::Success);
+/// Thread-safe writer wrapper.
+///
+/// This allows writers to be used behind shared runtime state without requiring
+/// `&mut` access from multiple call sites.
+pub struct SyncWriter {
+    inner: Arc<Mutex<Box<dyn Writer>>>,
+}
 
-        let mut buf = Vec::new();
-        JournalWriter::no_color().write_to(&mut buf, &journal)?;
+impl SyncWriter {
+    pub fn new(writer: impl Writer + 'static) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Box::new(writer))),
+        }
+    }
+}
 
-        let output = String::from_utf8(buf).unwrap();
-        // Should not contain ANSI escape codes
-        assert!(!output.contains("\x1b["));
-        Ok(())
+impl Clone for SyncWriter {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl Writer for SyncWriter {
+    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
+        self.inner.lock().write_record(record, scope)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.lock().flush()
     }
 }

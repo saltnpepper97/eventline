@@ -1,240 +1,129 @@
-//! ## Buffered Logging
-//!
-//! `JournalBuffer` provides buffered logging for high-throughput scenarios.
-//! It accumulates scopes and records in memory using **local IDs** (starting from 0),
-//! then rebases them to global IDs when flushed to the main journal.
-//!
-//! This design ensures:
-//! - **Deterministic ordering**: Flush order determines final ID assignment
-//! - **No ID collisions**: IDs are assigned only at flush time by the Journal
-//! - **Concurrent safety**: Multiple buffers can exist without coordination
-//! - **Simplicity**: No complex ID reservation or offset tracking
+use crate::core::{ExitMessages, Record, RecordId, Scope, ScopeId};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
-use super::Journal;
-use super::utils::current_millis;
-
-use crate::EventKind;
-use crate::{RecordId, ScopeId};
-use crate::Outcome;
-use crate::Scope;
-use crate::{Record, RecordKind};
-
-/// A buffered journal for batching writes before flushing to the main `Journal`.
+/// Thread-safe buffer for journal records and scopes.
 ///
-/// **Design**: Uses local IDs (starting from 0) that are rebased when flushed.
-/// This ensures deterministic ID assignment while allowing concurrent buffering.
-///
-/// Invariant:
-/// - All ScopeId values used in this buffer must originate from this buffer
-///
-/// ## Usage
-///
-/// ```rust
-/// use eventline::Journal;
-/// use eventline::JournalBuffer;
-/// use eventline::Outcome;
-/// 
-/// let mut journal = Journal::new();
-/// let mut buffer = journal.create_buffer();
-/// 
-/// let scope = buffer.enter_scope(None, None);
-/// buffer.record(Some(scope), "Buffered event");
-/// buffer.exit_scope(scope, Outcome::Success);
-///
-/// journal.flush_buffer(buffer);
-/// ```
-#[derive(Debug)]
-pub struct JournalBuffer {
-    pub(super) scopes: Vec<Scope>,
-    pub(super) records: Vec<Record>,
+/// Design notes:
+/// - Records are append-only.
+/// - Scopes are created once (enter) and later *finalized* exactly once (exit)
+///   by filling `exited_at`. This does not violate append-only record history; it
+///   completes scope metadata needed for duration/outcome analysis and replay.
+#[derive(Clone)]
+pub struct Buffer {
+    records: Arc<RwLock<Vec<Record>>>,
+    scopes: Arc<RwLock<Vec<Scope>>>,
 }
 
-
-impl JournalBuffer {
-    /// Create a new, empty buffer with local IDs.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::JournalBuffer;
-    /// 
-    /// let buffer = JournalBuffer::new();
-    /// assert!(buffer.is_empty());
-    /// ```
+impl Buffer {
     pub fn new() -> Self {
         Self {
-            scopes: Vec::new(),
-            records: Vec::new(),
+            records: Arc::new(RwLock::new(Vec::new())),
+            scopes: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Enter a new scope in the buffer, optionally nested under a parent scope.
-    ///
-    /// Returns a `ScopeId` using **local numbering** (starting from 0).
-    /// This ID will be rebased to a global ID when the buffer is flushed.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::JournalBuffer;
-    /// 
-    /// let mut buffer = JournalBuffer::new();
-    /// let scope_id = buffer.enter_scope(None, None);
-    /// // scope_id now contains a local ID (starting from 0)
-    /// ```
-    pub fn enter_scope(&mut self, parent: Option<ScopeId>, name: impl Into<Option<String>>) -> ScopeId {
-        let id = ScopeId(self.scopes.len() as u64);
-
-        self.scopes.push(Scope {
-            id,
-            parent,
-            entered_at: current_millis(),
-            name: name.into(),
-            exited_at: None,
-        });
-
-        id
+    pub fn with_capacity(records: usize, scopes: usize) -> Self {
+        Self {
+            records: Arc::new(RwLock::new(Vec::with_capacity(records))),
+            scopes: Arc::new(RwLock::new(Vec::with_capacity(scopes))),
+        }
     }
 
-    /// Exit a scope with a specific `Outcome`.
-    ///
-    /// Appends a `ScopeExit` record to the buffer using local IDs.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::JournalBuffer;
-    /// use eventline::Outcome;
-    /// 
-    /// let mut buffer = JournalBuffer::new();
-    /// let scope_id = buffer.enter_scope(None, None);
-    /// buffer.exit_scope(scope_id, Outcome::Success);
-    /// ```
-    pub fn exit_scope(&mut self, scope: ScopeId, outcome: Outcome) -> RecordId {
-        let id = RecordId(self.records.len() as u64);
-
-        let now = current_millis();
-        self.records.push(Record {
-            id,
-            scope: Some(scope),
-            time: now,
-            kind: RecordKind::ScopeExit {
-                outcome,
-                exited_at: now,
-            },
-        });
-
-        id
+    pub fn push_record(&self, record: Record) {
+        self.records.write().push(record);
     }
 
-    /// Record an informational event within an optional scope.
-    ///
-    /// Buffered events default to [`EventKind::Info`].
-    /// Use [`record_with_kind`] if a different kind is required.
-    ///
-    /// Uses local IDs that will be rebased on flush.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::JournalBuffer;
-    /// 
-    /// let mut buffer = JournalBuffer::new();
-    /// let scope_id = buffer.enter_scope(None, None);
-    /// buffer.record(Some(scope_id), "Buffered event");
-    /// ```
-    pub fn record(&mut self, scope: Option<ScopeId>, message: impl Into<String>) -> RecordId {
-        self.record_with_kind(scope, EventKind::Info, message)
+    pub fn push_scope(&self, scope: Scope) {
+        self.scopes.write().push(scope);
     }
 
-    /// Record an event with an explicit [`EventKind`] within an optional scope.
-    ///
-    /// This allows buffered logs to capture warnings or errors without
-    /// immediately failing a scope.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::JournalBuffer;
-    /// use eventline::EventKind;
-    /// 
-    /// let mut buffer = JournalBuffer::new();
-    /// let scope = buffer.enter_scope(None, None);
-    /// buffer.record_with_kind(scope.into(), EventKind::Warning, "Something looks off");
-    /// ```
-    pub fn record_with_kind(
-        &mut self,
-        scope: Option<ScopeId>,
-        kind: EventKind,
-        message: impl Into<String>,
-    ) -> RecordId {
-        let id = RecordId(self.records.len() as u64);
-
-        self.records.push(Record {
-            id,
-            scope,
-            time: current_millis(),
-            kind: RecordKind::Event {
-                kind,
-                message: message.into(),
-                fields: crate::core::value::Fields::new(), // NEW - empty fields
-            },
-        });
-
-        id
+    pub fn get_record(&self, idx: usize) -> Option<Record> {
+        self.records.read().get(idx).cloned()
     }
 
-    /// Flush buffered contents to a journal.
-    ///
-    /// This consumes the buffer and rebases all local IDs to global IDs.
-    ///
-    /// # Example
-    /// ```
-    /// use eventline::Journal;
-    /// use eventline::JournalBuffer;
-    /// 
-    /// let mut journal = Journal::new();
-    /// let mut buffer = JournalBuffer::new();
-    /// buffer.record(None, "Event");
-    /// buffer.flush_to(&mut journal);
-    /// ```
-    pub fn flush_to(self, journal: &mut Journal) {
-        journal.flush_buffer(self);
+    pub fn get_scope(&self, idx: usize) -> Option<Scope> {
+        self.scopes.read().get(idx).cloned()
     }
 
-    /// Get the number of buffered records.
+    /// Lookup a record by its stable ID without cloning the whole buffer.
+    pub fn get_record_by_id(&self, id: RecordId) -> Option<Record> {
+        self.records
+            .read()
+            .iter()
+            .find(|r| r.id == id)
+            .cloned()
+    }
+
+    /// Lookup a scope by its stable ID without cloning the whole buffer.
+    pub fn get_scope_by_id(&self, id: ScopeId) -> Option<Scope> {
+        self.scopes
+            .read()
+            .iter()
+            .find(|s| s.id == id)
+            .cloned()
+    }
+
+    /// Set per-outcome exit messages for an existing scope.
     ///
-    /// # Example
-    /// ```
-    /// use eventline::journal::buffer::JournalBuffer;
-    /// 
-    /// let buffer = JournalBuffer::new();
-    /// assert_eq!(buffer.len(), 0);
-    /// ```
-    pub fn len(&self) -> usize {
-        self.records.len()
-    }
-
-    /// Check if the buffer is empty.
+    /// Returns `true` if the scope existed and was updated, `false` otherwise.
     ///
-    /// # Example
-    /// ```
-    /// use eventline::JournalBuffer;
-    /// 
-    /// let buffer = JournalBuffer::new();
-    /// assert!(buffer.is_empty());
-    /// ```
-    pub fn is_empty(&self) -> bool {
-        self.records.is_empty() && self.scopes.is_empty()
+    /// Notes:
+    /// - This is safe to call any time after `enter_scope` (even after exit),
+    ///   but typically you set it right after entering.
+    pub fn set_scope_exit_messages(&self, id: ScopeId, msgs: ExitMessages) -> bool {
+        let mut scopes = self.scopes.write();
+        if let Some(scope) = scopes.iter_mut().find(|s| s.id == id) {
+            scope.exit_messages = msgs;
+            true
+        } else {
+            false
+        }
     }
 
-    /// Immutable access to buffered scopes (with local IDs).
-    pub fn scopes(&self) -> &[Scope] {
-        &self.scopes
+    /// Finalize (close) a scope by setting `exited_at` if it has not already been set.
+    ///
+    /// Returns the updated scope snapshot, or `None` if:
+    /// - scope does not exist, or
+    /// - scope was already finalized (idempotence / safety).
+    pub fn finalize_scope_exit(&self, id: ScopeId, exited_at_millis: u64) -> Option<Scope> {
+        let mut scopes = self.scopes.write();
+        let scope = scopes.iter_mut().find(|s| s.id == id)?;
+
+        // Do not rewrite completed scopes: exit is a one-time transition.
+        if scope.exited_at.is_some() {
+            return None;
+        }
+
+        scope.exited_at = Some(exited_at_millis);
+        Some(scope.clone())
     }
 
-    /// Immutable access to buffered records (with local IDs).
-    pub fn records(&self) -> &[Record] {
-        &self.records
+    pub fn records_len(&self) -> usize {
+        self.records.read().len()
+    }
+
+    pub fn scopes_len(&self) -> usize {
+        self.scopes.read().len()
+    }
+
+    /// Get a snapshot of all records (bulk export/debug).
+    pub fn records_snapshot(&self) -> Vec<Record> {
+        self.records.read().clone()
+    }
+
+    /// Get a snapshot of all scopes (bulk export/debug).
+    pub fn scopes_snapshot(&self) -> Vec<Scope> {
+        self.scopes.read().clone()
+    }
+
+    pub fn clear(&self) {
+        self.records.write().clear();
+        self.scopes.write().clear();
     }
 }
 
-impl Default for JournalBuffer {
+impl Default for Buffer {
     fn default() -> Self {
         Self::new()
     }

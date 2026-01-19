@@ -1,7 +1,3 @@
-//! Unique identifiers used throughout `eventline`.
-//!
-//! These types provide **type safety** and avoid mixing scope and record IDs.
-
 /// Unique identifier for a scope in the journal.
 /// Returned by `Journal::enter_scope` and used for recording events or exiting scopes.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]

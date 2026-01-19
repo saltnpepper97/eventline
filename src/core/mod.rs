@@ -10,5 +10,5 @@ pub use id::{RecordId, ScopeId};
 pub use outcome::Outcome;
 pub use record::{Record, RecordKind};
 pub use scope::Scope;
-pub use scope::scope_guard::ScopeGuard;
-pub use value::{Value, Fields, IntoFields};
+pub use scope::{ScopeGuard, RuntimeScopeGuard, ExitMessages};
+pub use value::Value;

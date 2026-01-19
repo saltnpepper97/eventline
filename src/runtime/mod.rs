@@ -1,328 +1,227 @@
-//! Global runtime for fire-and-forget logging.
-//!
-//! This module provides a process-wide facade over the pure [`Journal`].
-//! It enables:
-//! - Fire-and-forget event recording from anywhere in the codebase
-//! - Automatic scope tracking per async task
-//! - No &mut Journal required at call sites
-//! - Safe concurrent access via internal synchronization
-//! - Optional dual output: journal + immediate console printing
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! use eventline::runtime;
-//! use eventline::{event_info, scoped_eventline};
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     // Initialize once at startup
-//!     runtime::init().await;
-//!
-//!     // Enable dual output (optional)
-//!     runtime::enable_console_output(true);
-//!
-//!     // Record single events
-//!     event_info!("Application started");
-//!
-//!     // Create scoped contexts
-//!     scoped_eventline!("DatabaseMigration", {
-//!         runtime::info("Starting migration").await;
-//!         runtime::info("Migration complete").await;
-//!     });
-//! }
-//! ```
-
-pub mod event;
-pub mod live_log;
 pub mod log_level;
-pub mod scope;
-pub mod tests;
 
-pub use event::{record, info, warn, error, debug};
-pub use live_log::{append, enable};
-pub use scope::{current_scope, current_scope_sync, scoped_in_place, try_scoped_unnamed, try_scoped_unnamed_async, scoped_unnamed};
-pub use log_level::*;
+pub use log_level::{get_log_level, set_log_level, LogLevel};
 
-// Note: Other scope functions (scoped, scoped_async, try_scoped, etc.) are kept
-// in the scope module for internal use and tests, but not re-exported publicly.
-// Users should use the scoped_eventline! macro instead.
+use crate::journal::{FileWriter, Journal, MultiWriter, StdoutWriter};
+use crate::render::{ConsoleStyle, FileStyle};
+use parking_lot::Mutex;
+use std::path::Path;
+use std::sync::OnceLock;
 
-use std::io::Write;
-use std::sync::{Arc, LazyLock};
-use tokio::sync::{Mutex, RwLock};
+/// Global runtime state.
+///
+/// SOLID boundaries:
+/// - `core`: data types only.
+/// - `journal`: append-only history + writer integration.
+/// - `render`: canonical formatting.
+/// - `runtime`: global config + sinks + filtering policy.
+///
+/// Important invariant:
+/// - The journal records the full structured history.
+/// - Log level and output toggles only gate *emission* (writers), not recording.
+pub struct Runtime {
+    journal: Mutex<Journal>,
 
-use crate::render;
-use crate::Filter;
-use crate::ScopeId;
-use crate::Journal;
-use crate::render::console;
+    // Console sink configuration
+    console_enabled: Mutex<bool>,
+    console_color: Mutex<bool>,
+    console_duration: Mutex<bool>,
+    console_timestamp: Mutex<bool>,
 
-/// Global runtime singleton.
-static RUNTIME: LazyLock<RwLock<Option<Arc<Runtime>>>> =
-    LazyLock::new(|| RwLock::new(None));
-
-// Task-local scope tracking for async code
-tokio::task_local! {
-    static CURRENT_SCOPE: Option<ScopeId>;
+    // File sink configuration (kept so console rebuilds don't drop file output)
+    file_enabled: Mutex<bool>,
+    file_path: Mutex<Option<std::path::PathBuf>>,
 }
 
-// Thread-local fallback for synchronous scoped(...) closures.
-// This allows a synchronous closure to see the scope immediately.
-//
-// It's only used by the sync `scoped` function; async code continues to
-// use the tokio task-local CURRENT_SCOPE.
-thread_local! {
-    static THREAD_SCOPE: std::cell::RefCell<Option<ScopeId>> = std::cell::RefCell::new(None);
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+fn rt() -> &'static Runtime {
+    RUNTIME.get_or_init(|| Runtime {
+        journal: Mutex::new(Journal::new()),
+
+        console_enabled: Mutex::new(true),
+        console_color: Mutex::new(true),
+        console_duration: Mutex::new(false),
+        console_timestamp: Mutex::new(false),
+
+        file_enabled: Mutex::new(false),
+        file_path: Mutex::new(None),
+    })
 }
 
-/// The global runtime state.
-struct Runtime {
-    /// The underlying journal, protected by a mutex for safe concurrent access.
-    journal: Arc<Mutex<Journal>>,
-}
-
-/// Access the global runtime (panics if not initialized).
-async fn get_runtime() -> Arc<Runtime> {
-    let runtime_guard = RUNTIME.read().await;
-    runtime_guard
-        .as_ref()
-        .expect("eventline runtime not initialized - call runtime::init() first")
-        .clone()
-}
-
-/// Initializes the global Eventline runtime.
+/// Initialize runtime.
 ///
-/// Must be called once before using any logging or scoped operations.  
-/// If called multiple times, it will reset the previous runtime state.
-///
-/// # Example
-///
-/// ```
-/// use eventline::runtime;
-///
-/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// runtime::init().await;
-/// runtime::info("Application started").await;
-/// # });
-/// ```
+/// This is idempotent; calling it multiple times is safe.
+/// Defaults:
+/// - console output enabled
+/// - console color enabled
+/// - console timestamps disabled
+/// - console duration disabled
+/// - global log level defaults to Info (in `log_level.rs`)
 pub async fn init() {
-    let mut guard = RUNTIME.write().await;
-    *guard = Some(Arc::new(Runtime {
-        journal: Arc::new(Mutex::new(Journal::new())),
-    }));
+    let _ = rt();
+    rebuild_writers();
 }
 
-/// Resets the global runtime to an uninitialized state.
-///
-/// Primarily useful for testing scenarios where a clean runtime state is needed
-/// between test runs.
-///
-/// # Example
-///
-/// ```
-/// use eventline::runtime;
-///
-/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// runtime::init().await;
-/// runtime::info("Test event").await;
-/// runtime::reset().await; // resets runtime for next test
-/// # });
-/// ```
-pub async fn reset() {
-    let mut guard = RUNTIME.write().await;
-    *guard = None;
-}
-
-/// Returns whether the global runtime has been initialized.
-pub async fn is_initialized() -> bool {
-    RUNTIME.read().await.is_some()
-}
-
-/// Enable or disable automatic console output for events.
-///
-/// When enabled, events are printed to the console immediately as they're recorded,
-/// in addition to being stored in the journal. This provides "dual output" mode.
-///
-/// # Example
-///
-/// ```
-/// use eventline::runtime;
-///
-/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// runtime::init().await;
-/// runtime::enable_console_output(true);
-/// runtime::info("Server started on port 8080").await;
-/// # });
-/// ```
+/// Enable/disable console output.
 pub fn enable_console_output(enable: bool) {
-    console::enable_console_output(enable);
+    *rt().console_enabled.lock() = enable;
+    rebuild_writers();
 }
 
-/// Check if console output is currently enabled.
-pub fn is_console_enabled() -> bool {
-    console::is_console_enabled()
-}
-
-/// Enable or disable color output for console events.
+/// Enable/disable ANSI colors in console output.
 pub fn enable_console_color(enable: bool) {
-    console::enable_console_color(enable);
+    *rt().console_color.lock() = enable;
+    rebuild_writers();
 }
 
-/// Check if console color is currently enabled.
-pub fn is_console_color_enabled() -> bool {
-    console::is_console_color_enabled()
+/// Show/hide duration on console scope-exit lines.
+pub fn enable_console_duration(enable: bool) {
+    *rt().console_duration.lock() = enable;
+    rebuild_writers();
 }
 
-/// Access the journal with a read-only closure.
+/// Show/hide timestamp prefix on console output.
+pub fn enable_console_timestamp(enable: bool) {
+    *rt().console_timestamp.lock() = enable;
+    rebuild_writers();
+}
+
+/// Enable file output (append) using canonical detailed format.
 ///
-/// # Example
+/// File output is intended for audit/post-mortem. It remains enabled across
+/// console config changes (because file config is stored in `Runtime`).
+pub fn enable_file_output(path: impl AsRef<Path>) -> std::io::Result<()> {
+    *rt().file_enabled.lock() = true;
+    *rt().file_path.lock() = Some(path.as_ref().to_path_buf());
+    rebuild_writers();
+    Ok(())
+}
+
+/// Disable file output (still records in memory).
+pub fn disable_file_output() {
+    *rt().file_enabled.lock() = false;
+    *rt().file_path.lock() = None;
+    rebuild_writers();
+}
+
+/// Disable all writers (still records in memory).
+pub fn disable_all_output() {
+    *rt().console_enabled.lock() = false;
+    *rt().file_enabled.lock() = false;
+    *rt().file_path.lock() = None;
+    rebuild_writers();
+}
+
+/// Emit an event into the journal.
+/// This is the core primitive macros call.
+pub fn emit(kind: crate::core::EventKind, message: String, fields: crate::journal::Fields) {
+    let mut j = rt().journal.lock();
+    let _ = j.record(kind, message, fields);
+}
+
+/// Enter a runtime scope and return an RAII guard that exits on drop.
 ///
-/// ```
-/// use eventline::runtime;
-/// use eventline::journal::JournalWriter;
-/// use std::fs::File;
+/// This is async-friendly and does not require `UnwindSafe`.
+pub fn scope_guard(name: impl Into<String>) -> crate::core::RuntimeScopeGuard {
+    crate::core::RuntimeScopeGuard::enter(name)
+}
+
+/// Enter a scope; returns the scope id.
+pub fn enter_scope(name: impl Into<String>) -> crate::core::ScopeId {
+    rt().journal.lock().enter_scope(name)
+}
+
+/// Set per-outcome exit messages for an existing scope.
 ///
-/// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-/// runtime::init().await;
-/// runtime::info("test event").await;
-///
-/// runtime::with_journal(|journal| {
-///     let mut file = File::create("eventline.log").unwrap();
-///     JournalWriter::new().write_to(&mut file, journal).unwrap();
-/// }).await;
-/// # });
-/// ```
-pub async fn with_journal<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&Journal) -> R,
-{
-    let runtime_guard = RUNTIME.read().await;
-    if let Some(rt) = runtime_guard.as_ref() {
-        let journal = rt.journal.lock().await;
-        Some(f(&*journal))
-    } else {
-        None
+/// These messages only affect the `done:` (ScopeExit) render.
+pub fn set_scope_exit_messages(id: crate::core::ScopeId, msgs: crate::core::ExitMessages) {
+    rt().journal.lock().set_scope_exit_messages(id, msgs);
+}
+
+/// Exit a scope explicitly.
+pub fn exit_scope(id: crate::core::ScopeId, outcome: crate::core::Outcome) {
+    let _ = rt().journal.lock().exit_scope(id, outcome);
+}
+
+/// Flush sinks.
+pub fn flush() -> std::io::Result<()> {
+    rt().journal.lock().flush()
+}
+
+/// Access snapshots (for saving/export).
+pub fn records() -> Vec<crate::core::Record> {
+    rt().journal.lock().records()
+}
+
+pub fn scopes() -> Vec<crate::core::Scope> {
+    rt().journal.lock().scopes()
+}
+
+// ---------------- internal writer wiring ----------------
+
+fn rebuild_writers() {
+    let console_enabled = *rt().console_enabled.lock();
+    let console_color = *rt().console_color.lock();
+    let console_duration = *rt().console_duration.lock();
+    let console_timestamp = *rt().console_timestamp.lock();
+
+    let file_enabled = *rt().file_enabled.lock();
+    let file_path = rt().file_path.lock().clone();
+
+    let mut mw = MultiWriter::new();
+
+    // Console sink (simple/human-facing)
+    if console_enabled {
+        mw.add(StdoutWriter::with_style(ConsoleStyle {
+            color: console_color,
+            show_scope: true,
+            show_duration: console_duration,
+            show_timestamp: console_timestamp,
+        }));
     }
-}
 
-/// Access the journal with a mutable closure.
-///
-/// Use with caution - prefer the high-level API when possible.
-pub async fn with_journal_mut<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&mut Journal) -> R,
-{
-    let runtime_guard = RUNTIME.read().await;
-    if let Some(rt) = runtime_guard.as_ref() {
-        let mut journal = rt.journal.lock().await;
-        Some(f(&mut *journal))
-    } else {
-        None
-    }
-}
-
-/// Enable live logging to the given file path.
-/// This will create directories if they don't exist.
-pub fn enable_live_logging(path: impl Into<std::path::PathBuf>) {
-    live_log::enable(path.into());
-}
-
-/// Render a journal summary using runtime's current journal.
-///
-/// Prints to console if console output is enabled, and writes to live log file if enabled.
-pub async fn runtime_summary(color: bool, filter: Option<&Filter>, per_scope: bool) {
-    let rt_opt = RUNTIME.read().await.clone();
-    let Some(rt) = rt_opt else { return };
-
-    let summary_data = {
-        let journal = rt.journal.lock().await;
-        let default_filter_storage = Filter::default();
-        let default_filter = filter.unwrap_or(&default_filter_storage);
-
-        let filtered_scopes: Vec<_> = journal
-            .scopes()
-            .iter()
-            .filter(|s| default_filter.matches_scope(s, &journal))
-            .cloned()
-            .collect();
-
-        let total_scopes = filtered_scopes.len();
-        let total_events = journal
-            .records()
-            .iter()
-            .filter(|r| matches!(r.kind, crate::RecordKind::Event { .. }))
-            .filter(|r| default_filter.matches_event(r))
-            .count();
-
-        let mut success = 0;
-        let mut failure = 0;
-        let mut aborted = 0;
-
-        for scope in &filtered_scopes {
-            let outcome = journal.records().iter()
-                .find(|r| matches!(r.kind, crate::RecordKind::ScopeExit { .. }) && r.scope == Some(scope.id))
-                .map(|r| if let crate::RecordKind::ScopeExit { outcome, .. } = r.kind { outcome } else { crate::Outcome::Aborted })
-                .unwrap_or(crate::Outcome::Aborted);
-
-            match outcome {
-                crate::Outcome::Success => success += 1,
-                crate::Outcome::Failure => failure += 1,
-                crate::Outcome::Aborted => aborted += 1,
+    // File sink (detailed/audit-friendly)
+    if file_enabled {
+        if let Some(path) = file_path {
+            match FileWriter::with_style(
+                path,
+                FileStyle {
+                    show_timestamp: true,
+                    show_scope: true,
+                },
+            ) {
+                Ok(fw) => mw.add(fw),
+                Err(_) => {
+                    // avoid recursion by not emitting here
+                }
             }
         }
-
-        let total_duration_ms: u64 = filtered_scopes.iter().map(|s| {
-            journal.records().iter()
-                .find(|r| matches!(r.kind, crate::RecordKind::ScopeExit { .. }) && r.scope == Some(s.id))
-                .and_then(|r| {
-                    if let crate::RecordKind::ScopeExit { exited_at, .. } = r.kind {
-                        Some(exited_at.saturating_sub(s.entered_at))
-                    } else { None }
-                })
-                .unwrap_or(0)
-        }).sum();
-
-        (total_scopes, total_events, success, failure, aborted, total_duration_ms, filtered_scopes, journal.clone())
-    };
-
-    let (total_scopes, total_events, success, failure, aborted, total_duration_ms, filtered_scopes, journal_snapshot) = summary_data;
-
-    // Console output
-    if is_console_enabled() {
-        render::render_summary(&journal_snapshot, color, filter, per_scope);
     }
 
-    // Live log output
-    let mut buffer = Vec::new();
-    let config = render::canonical::RenderConfig::no_color();
-
-    let _ = writeln!(buffer, "Session summary: {} scopes, {} events", total_scopes, total_events);
-    let _ = writeln!(buffer, "  Successful scopes: {}", success);
-    let _ = writeln!(buffer, "  Failed scopes: {}", failure);
-    let _ = writeln!(buffer, "  Aborted scopes: {}", aborted);
-    let _ = writeln!(buffer, "  Total duration: {}ms", total_duration_ms);
-
-    if per_scope {
-        let _ = writeln!(buffer, "\nPer-scope summary:");
-        for scope in &filtered_scopes {
-            let scope_header = render::canonical::render_scope_header(&journal_snapshot, scope, &config);
-            let _ = writeln!(buffer, "  {}", scope_header.header);
-        }
-    }
-
-    let text = String::from_utf8_lossy(&buffer);
-    for line in text.lines() {
-        live_log::append(line);
+    // If no sinks enabled, use a noop writer so journal can still be used uniformly.
+    if mw.is_empty() {
+        rt().journal.lock().set_writer(NoopWriter);
+    } else {
+        rt().journal.lock().set_writer(mw);
     }
 }
 
-/// Spawn a detached task for fire-and-forget operations like logging.
+/// Writer used when output is fully disabled.
 ///
-/// This allows logging macros to avoid `.await` by spawning background tasks.
-pub fn spawn_detached<F>(future: F)
-where
-    F: std::future::Future<Output = ()> + Send + 'static,
-{
-    tokio::spawn(future);
+/// Note: this does not affect recording; the journal still stores all records.
+struct NoopWriter;
+
+impl crate::journal::Writer for NoopWriter {
+    fn write_record(
+        &mut self,
+        _record: &crate::core::Record,
+        _scope: Option<&crate::core::Scope>,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }

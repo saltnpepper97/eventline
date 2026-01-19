@@ -1,30 +1,26 @@
 //! Semantic classification for journal events.
 //!
-//! EventKind describes *what kind of event* occurred, not how important it is
-//! or whether it should be shown. Filtering and rendering decisions are made
-//! by writers and renderers, not at record time.
+//! EventKind describes what kind of event occurred. It does not encode
+//! severity, importance, or visibility. Filtering and rendering are handled
+//! by writers and renderers.
 
 use serde::Serialize;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
 pub enum EventKind {
-    /// Normal informational event.
     Info,
-    /// Something unexpected but recoverable occurred.
     Warning,
-    /// An error occurred; execution continued or was handled.
     Error,
-    /// Low-level diagnostic information.
     Debug,
 }
 
 impl EventKind {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
-            EventKind::Info => "INFO",
-            EventKind::Warning => "WARN",
-            EventKind::Error => "ERROR",
-            EventKind::Debug => "DEBUG",
+            EventKind::Info => "Info",
+            EventKind::Warning => "Warn",
+            EventKind::Error => "Error",
+            EventKind::Debug => "Debug",
         }
     }
 }
