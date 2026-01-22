@@ -1,6 +1,6 @@
 [package]
 name = "eventline"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 authors = ["Dustin Pilgrim <dustin.pilgrim1997@gmail.com>"]
 description = "Structured journaling and scoped logging for Rust applications."
@@ -9,7 +9,7 @@ repository = "https://github.com/saltnpepper97/eventline"
 readme = "README.md"
 keywords = ["logging", "journal", "tracing", "scopes", "debugging"]
 categories = ["development-tools::debugging", "development-tools::profiling"]
-rust-version = "1.90"
+rust-version = "1.89"
 
 [dependencies]
 parking_lot = "0.12.5"
