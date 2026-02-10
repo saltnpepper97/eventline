@@ -39,7 +39,7 @@ This makes eventline ideal for post-mortems, debugging, and deterministic “wha
 Add it to your project:
 
     [dependencies]
-    eventline = "0.6.0"
+    eventline = "0.6.1"
 
 Initialize once early:
 
