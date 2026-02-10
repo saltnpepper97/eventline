@@ -51,72 +51,71 @@ macro_rules! error {
 /// Forms:
 /// - `scope!("config", { ... })`
 /// - `scope!("config", success="loaded", { ... })`
-/// - `scope!("config", failure="bad config", { ... })`
-/// - `scope!("config", aborted="skipped", { ... })`
-/// - `scope!("config", success="loaded", failure="bad config", { ... })`
-/// - `scope!("config", success="loaded", failure="bad config", aborted="skipped", { ... })`
+/// - `scope!("config", success="loaded", failure="failed", aborted="aborted", { ... })`
+///
+/// Exit messages only appear on the scope exit ("done:") line.
 #[macro_export]
 macro_rules! scope {
-    // Base form
+    // ---------------------------------------------------------------------
+    // Base form — FAST PATH (no parsing, no messages)
+    // ---------------------------------------------------------------------
     ($name:expr, $block:block) => {{
         let _guard = $crate::core::RuntimeScopeGuard::enter($name);
         $block
     }};
 
-    // Key/value form(s) then a block:
-    ($name:expr, $($rest:tt)+) => {{
+    // ---------------------------------------------------------------------
+    // success-only form — FAST PATH
+    // ---------------------------------------------------------------------
+    ($name:expr, success=$success:expr, $block:block) => {{
         let _guard = $crate::core::RuntimeScopeGuard::enter($name);
-
-        // Collect optional exit messages.
-        let mut _msgs = $crate::core::ExitMessages {
-            success: None,
-            failure: None,
-            aborted: None,
-        };
-
-        // Parse pairs into _msgs, then run the block.
-        $crate::scope!(@parse _msgs, $($rest)+);
-
-        // Apply messages once. (If none were set, this is a no-op you can keep or remove.)
-        $crate::runtime::set_scope_exit_messages(_guard.id(), _msgs);
-
-        $crate::scope!(@block $($rest)+)
+        $crate::runtime::set_scope_exit_messages(
+            _guard.id(),
+            $crate::core::ExitMessages {
+                success: Some($success.to_string()),
+                failure: None,
+                aborted: None,
+            },
+        );
+        $block
     }};
 
-    // ----- Parser -----
-    (@parse $msgs:ident, success = $val:expr, $($rest:tt)+) => {{
-        $msgs.success = Some($val.to_string());
-        $crate::scope!(@parse $msgs, $($rest)+);
-    }};
-    (@parse $msgs:ident, failure = $val:expr, $($rest:tt)+) => {{
-        $msgs.failure = Some($val.to_string());
-        $crate::scope!(@parse $msgs, $($rest)+);
-    }};
-    (@parse $msgs:ident, aborted = $val:expr, $($rest:tt)+) => {{
-        $msgs.aborted = Some($val.to_string());
-        $crate::scope!(@parse $msgs, $($rest)+);
-    }};
-
-    // Allow trailing comma before the block
-    (@parse $msgs:ident, , $($rest:tt)+) => {{
-        $crate::scope!(@parse $msgs, $($rest)+);
+    // ---------------------------------------------------------------------
+    // success + failure
+    // ---------------------------------------------------------------------
+    ($name:expr, success=$success:expr, failure=$failure:expr, $block:block) => {{
+        let _guard = $crate::core::RuntimeScopeGuard::enter($name);
+        $crate::runtime::set_scope_exit_messages(
+            _guard.id(),
+            $crate::core::ExitMessages {
+                success: Some($success.to_string()),
+                failure: Some($failure.to_string()),
+                aborted: None,
+            },
+        );
+        $block
     }};
 
-    // Stop parsing when we hit the block
-    (@parse $msgs:ident, $block:block) => {{
-        // done
-        let _ = &$msgs;
-        let _ = &$block;
+    // ---------------------------------------------------------------------
+    // success + failure + aborted
+    // ---------------------------------------------------------------------
+    (
+        $name:expr,
+        success=$success:expr,
+        failure=$failure:expr,
+        aborted=$aborted:expr,
+        $block:block
+    ) => {{
+        let _guard = $crate::core::RuntimeScopeGuard::enter($name);
+        $crate::runtime::set_scope_exit_messages(
+            _guard.id(),
+            $crate::core::ExitMessages {
+                success: Some($success.to_string()),
+                failure: Some($failure.to_string()),
+                aborted: Some($aborted.to_string()),
+            },
+        );
+        $block
     }};
-
-    // If someone passes junk before the block, fail loudly
-    (@parse $msgs:ident, $($bad:tt)+) => {{
-        compile_error!("scope!: expected success=..., failure=..., aborted=..., then a block");
-    }};
-
-    // ----- Extract the block to execute -----
-    (@block $block:block) => { $block };
-    (@block $k:ident = $v:expr, $($rest:tt)+) => { $crate::scope!(@block $($rest)+) };
-    (@block , $($rest:tt)+) => { $crate::scope!(@block $($rest)+) };
 }
 
