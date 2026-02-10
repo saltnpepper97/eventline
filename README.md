@@ -39,7 +39,7 @@ This makes eventline ideal for post-mortems, debugging, and deterministic “wha
 Add it to your project:
 
     [dependencies]
-    eventline = { git = "https://github.com/saltnpepper97/eventline" }
+    eventline = "0.6.0"
 
 Initialize once early:
 
