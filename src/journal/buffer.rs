@@ -70,11 +70,20 @@ impl Buffer {
     ///
     /// Notes:
     /// - This is safe to call any time after `enter_scope` (even after exit),
-    ///   but typically you set it right after entering.
+    ///   but typically you set it right after entering.    
     pub fn set_scope_exit_messages(&self, id: ScopeId, msgs: ExitMessages) -> bool {
         let mut scopes = self.scopes.write();
         if let Some(scope) = scopes.iter_mut().find(|s| s.id == id) {
-            scope.exit_messages = msgs;
+            // Merge semantics: only overwrite fields that are Some(_).
+            if msgs.success.is_some() {
+                scope.exit_messages.success = msgs.success;
+            }
+            if msgs.failure.is_some() {
+                scope.exit_messages.failure = msgs.failure;
+            }
+            if msgs.aborted.is_some() {
+                scope.exit_messages.aborted = msgs.aborted;
+            }
             true
         } else {
             false

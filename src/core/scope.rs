@@ -107,7 +107,12 @@ impl<'a> ScopeGuard<'a> {
 impl<'a> Drop for ScopeGuard<'a> {
     fn drop(&mut self) {
         if !self.exited {
-            let _ = self.journal.exit_scope(self.scope_id, Outcome::Aborted);
+            let outcome = if std::thread::panicking() {
+                Outcome::Failure
+            } else {
+                Outcome::Success
+            };
+            let _ = self.journal.exit_scope(self.scope_id, outcome);
             self.exited = true;
         }
     }
@@ -154,8 +159,14 @@ impl RuntimeScopeGuard {
 impl Drop for RuntimeScopeGuard {
     fn drop(&mut self) {
         if !self.exited {
-            crate::runtime::exit_scope(self.id, Outcome::Success);
+            let outcome = if std::thread::panicking() {
+                Outcome::Failure
+            } else {
+                Outcome::Success
+            };
+            crate::runtime::exit_scope(self.id, outcome);
             self.exited = true;
         }
     }
 }
+
