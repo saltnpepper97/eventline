@@ -1,6 +1,7 @@
 pub mod buffer;
 pub mod writer;
 pub mod fields;
+pub mod rotation;
 pub mod utils;
 
 use crate::core::*;
