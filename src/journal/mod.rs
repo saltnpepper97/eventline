@@ -1,14 +1,15 @@
 pub mod buffer;
-pub mod writer;
 pub mod fields;
 pub mod rotation;
 pub mod utils;
+pub mod writer;
 
 use crate::core::*;
 use buffer::Buffer;
 
-pub use writer::{Writer, StdoutWriter, FileWriter, MultiWriter, SyncWriter};
 pub use fields::Fields;
+pub use rotation::LogPolicy;
+pub use writer::{FileWriter, MultiWriter, RotatingFileWriter, StdoutWriter, SyncWriter, Writer};
 
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,10 +111,8 @@ impl Journal {
             },
         };
 
-        // Get the scope BEFORE borrowing the writer mutably.
         let scope = self.current_scope.and_then(|sid| self.get_scope(sid));
 
-        // Always record. Only gate emission.
         if let Some(writer) = &mut self.writer {
             if crate::runtime::log_level::enabled_for_record(&record) {
                 let _ = writer.write_record(&record, scope.as_ref());
@@ -127,7 +126,6 @@ impl Journal {
     pub fn exit_scope(&mut self, scope_id: ScopeId, outcome: Outcome) -> RecordId {
         let id = RecordId(self.next_record_id.fetch_add(1, Ordering::SeqCst));
 
-        // Finalize scope metadata in-buffer (one-time transition).
         let exited_at = utils::current_millis();
         if let Some(scope) = self.buffer.finalize_scope_exit(scope_id, exited_at) {
             let duration_ns = scope.elapsed().as_nanos() as u64;
@@ -142,10 +140,8 @@ impl Journal {
                 },
             };
 
-            // Always record. Only gate emission.
             if let Some(writer) = &mut self.writer {
                 if crate::runtime::log_level::enabled_for_record(&record) {
-                    // Writer sees the finalized scope (with exited_at set).
                     let _ = writer.write_record(&record, Some(&scope));
                 }
             }
