@@ -19,10 +19,10 @@
 pub struct RunHeader {
     /// Label shown in the centre of the header line.
     pub title: String,
-    /// Append `(pid=N)` to the label when true.
+    /// Append `(pid=N)` to the label when `true`.
     pub show_pid: bool,
     /// Total target width of the rendered line in characters.
-    /// The `=` padding fills the remaining space. Defaults to 72.
+    /// The `=` padding fills the remaining space.  Defaults to 72.
     pub width: usize,
 }
 
@@ -30,18 +30,18 @@ impl RunHeader {
     /// Create a header that includes the current process ID.
     pub fn new(title: impl Into<String>) -> Self {
         Self {
-            title: title.into(),
+            title:    title.into(),
             show_pid: true,
-            width: 72,
+            width:    72,
         }
     }
 
     /// Create a header without a PID annotation.
     pub fn without_pid(title: impl Into<String>) -> Self {
         Self {
-            title: title.into(),
+            title:    title.into(),
             show_pid: false,
-            width: 72,
+            width:    72,
         }
     }
 
@@ -59,15 +59,13 @@ impl RunHeader {
             format!(" {} ", self.title)
         };
 
-        // Ensure we always have at least a minimal border even if the title
-        // is very long.
+        // Always leave at least a minimal border even if the title is long.
         let padding = if inner.len() + 4 < self.width {
             self.width - inner.len()
         } else {
             4
         };
-
-        let left = padding / 2;
+        let left  = padding / 2;
         let right = padding - left;
 
         format!("{}{}{}", "=".repeat(left), inner, "=".repeat(right))

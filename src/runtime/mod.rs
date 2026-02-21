@@ -6,91 +6,126 @@ pub use run_header::RunHeader;
 
 use crate::journal::{rotation, FileWriter, Journal, LogPolicy, MultiWriter, RotatingFileWriter, StdoutWriter};
 use crate::render::{ConsoleStyle, FileStyle};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
 
 /// Maximum number of records the journal keeps in memory at any one time.
-/// Older records are dropped once this limit is exceeded.
 const MAX_JOURNAL_RECORDS: usize = 500;
+
+/// How many `emit` calls between trim passes.
+///
+/// Trimming is O(n) so we only do it periodically rather than every call.
+/// At 500 records max, trim overhead is negligible; at high log volume, this
+/// amortises it across 128 calls instead of paying it every time.
+const TRIM_INTERVAL: usize = 128;
+
+// ---------------------------------------------------------------------------
+// Config snapshot (all writer-relevant state in one place)
+// ---------------------------------------------------------------------------
+
+/// All writer-relevant configuration in a single struct so that:
+/// - `rebuild_writers` acquires exactly **one** lock instead of six.
+/// - Change detection (`last_cfg`) is a single `PartialEq` compare.
+#[derive(Debug, Clone, PartialEq)]
+struct Config {
+    console_enabled:   bool,
+    console_color:     bool,
+    console_duration:  bool,
+    console_timestamp: bool,
+
+    file_enabled: bool,
+    file_path:    Option<PathBuf>,
+
+    /// Rotation policy fields stored separately because `LogPolicy` doesn't
+    /// implement `PartialEq`.
+    file_policy_max_bytes:    Option<u64>,
+    file_policy_keep_backups: Option<u32>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            console_enabled:          true,
+            console_color:            true,
+            console_duration:         false,
+            console_timestamp:        false,
+            file_enabled:             false,
+            file_path:                None,
+            file_policy_max_bytes:    None,
+            file_policy_keep_backups: None,
+        }
+    }
+}
+
+impl Config {
+    fn file_policy(&self) -> Option<LogPolicy> {
+        Some(LogPolicy {
+            max_bytes:    self.file_policy_max_bytes?,
+            keep_backups: self.file_policy_keep_backups?,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime
+// ---------------------------------------------------------------------------
 
 /// Global runtime state.
 ///
-/// SOLID boundaries:
-/// - `core`: data types only.
-/// - `journal`: append-only history + writer integration.
-/// - `render`: canonical formatting.
-/// - `runtime`: global config + sinks + filtering policy.
+/// ### Lock hierarchy (always acquire in this order to avoid deadlock)
 ///
-/// Important invariant:
-/// - The journal records the full structured history up to MAX_JOURNAL_RECORDS.
+/// 1. `config`  (`RwLock<Config>`)   — cheapest; short critical section.
+/// 2. `journal` (`Mutex<Journal>`)   — buffer push + scope look-up only.
+/// 3. `writer`  (`Mutex<…>`)         — I/O; acquired *after* journal is
+///                                      released so other threads can log
+///                                      concurrently.
+///
+/// ### Invariants
+///
+/// - The journal records the full structured history up to `MAX_JOURNAL_RECORDS`.
 /// - Log level and output toggles only gate *emission* (writers), not recording.
+/// - Writers are rebuilt lazily: `rebuild_writers` is a no-op when the effective
+///   config has not changed since the last rebuild.
 pub struct Runtime {
+    /// Structured history + scope tracker.
     journal: Mutex<Journal>,
 
-    // Console sink configuration
-    console_enabled: Mutex<bool>,
-    console_color: Mutex<bool>,
-    console_duration: Mutex<bool>,
-    console_timestamp: Mutex<bool>,
+    /// The active writer.  Held in a **separate** mutex from `journal` so that
+    /// I/O does not block threads that are pushing records into the buffer.
+    writer: Mutex<Box<dyn crate::journal::Writer + Send>>,
 
-    // File sink configuration
-    file_enabled: Mutex<bool>,
-    file_path: Mutex<Option<PathBuf>>,
+    /// All writer-relevant configuration in one lock.
+    config: RwLock<Config>,
 
-    // Rotation policy; None means use plain FileWriter (no rotation).
-    file_policy: Mutex<Option<LogPolicy>>,
+    /// Snapshot of the config used the last time writers were rebuilt.
+    /// Lets `rebuild_writers` skip expensive reconstruction when nothing changed.
+    last_cfg: Mutex<Option<Config>>,
 
-    // Snapshot of the config that was used the last time we built writers.
-    // rebuild_writers is skipped when the effective config hasn't changed.
-    last_writer_cfg: Mutex<Option<WriterCfg>>,
-}
-
-/// Snapshot of the writer-relevant config for change detection.
-#[derive(Debug, Clone, PartialEq)]
-struct WriterCfg {
-    console_enabled: bool,
-    console_color: bool,
-    console_duration: bool,
-    console_timestamp: bool,
-    file_enabled: bool,
-    file_path: Option<PathBuf>,
-    // LogPolicy doesn't impl PartialEq; compare via its fields instead.
-    file_policy_max_bytes: Option<u64>,
-    file_policy_keep_backups: Option<u32>,
+    /// Counter used to amortise trim overhead (trim every `TRIM_INTERVAL` emits).
+    emit_count: AtomicUsize,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 fn rt() -> &'static Runtime {
     RUNTIME.get_or_init(|| Runtime {
-        journal: Mutex::new(Journal::new()),
-
-        console_enabled: Mutex::new(true),
-        console_color: Mutex::new(true),
-        console_duration: Mutex::new(false),
-        console_timestamp: Mutex::new(false),
-
-        file_enabled: Mutex::new(false),
-        file_path: Mutex::new(None),
-        file_policy: Mutex::new(None),
-
-        last_writer_cfg: Mutex::new(None),
+        journal:    Mutex::new(Journal::new()),
+        writer:     Mutex::new(Box::new(NoopWriter)),
+        config:     RwLock::new(Config::default()),
+        last_cfg:   Mutex::new(None),
+        emit_count: AtomicUsize::new(0),
     })
 }
 
-/// Initialize runtime.
-///
-/// This is idempotent; calling it multiple times is safe.
-/// Defaults:
-/// - console output enabled
-/// - console color enabled
-/// - console timestamps disabled
-/// - console duration disabled
-/// - global log level defaults to Info (in `log_level.rs`)
+// ---------------------------------------------------------------------------
+// Public API — initialisation & configuration
+// ---------------------------------------------------------------------------
+
+/// Initialise the runtime.  Idempotent; safe to call multiple times.
 pub async fn init() {
     let _ = rt();
     rebuild_writers();
@@ -98,36 +133,36 @@ pub async fn init() {
 
 /// Enable/disable console output.
 pub fn enable_console_output(enable: bool) {
-    *rt().console_enabled.lock() = enable;
+    rt().config.write().console_enabled = enable;
     rebuild_writers();
 }
 
 /// Enable/disable ANSI colors in console output.
 pub fn enable_console_color(enable: bool) {
-    *rt().console_color.lock() = enable;
+    rt().config.write().console_color = enable;
     rebuild_writers();
 }
 
 /// Show/hide duration on console scope-exit lines.
 pub fn enable_console_duration(enable: bool) {
-    *rt().console_duration.lock() = enable;
+    rt().config.write().console_duration = enable;
     rebuild_writers();
 }
 
 /// Show/hide timestamp prefix on console output.
 pub fn enable_console_timestamp(enable: bool) {
-    *rt().console_timestamp.lock() = enable;
+    rt().config.write().console_timestamp = enable;
     rebuild_writers();
 }
 
 /// Enable file output (append) using canonical detailed format, no rotation.
-///
-/// File output is intended for audit/post-mortem. It remains enabled across
-/// console config changes (because file config is stored in `Runtime`).
 pub fn enable_file_output(path: impl AsRef<Path>) -> io::Result<()> {
-    *rt().file_enabled.lock() = true;
-    *rt().file_path.lock() = Some(path.as_ref().to_path_buf());
-    *rt().file_policy.lock() = None;
+    let mut cfg = rt().config.write();
+    cfg.file_enabled             = true;
+    cfg.file_path                = Some(path.as_ref().to_path_buf());
+    cfg.file_policy_max_bytes    = None;
+    cfg.file_policy_keep_backups = None;
+    drop(cfg);
     rebuild_writers();
     Ok(())
 }
@@ -137,21 +172,10 @@ pub fn enable_file_output(path: impl AsRef<Path>) -> io::Result<()> {
 /// - If the existing log file is at or over `policy.max_bytes` it is rotated
 ///   immediately before the writer opens.
 /// - If `header` is `Some`, a decorated header line is written as raw bytes
-///   into the (possibly fresh) file before structured records begin. A blank
-///   separator line is inserted automatically when appending to an existing
-///   non-empty file.
-///
-/// # Example
-///
-/// ```rust
-/// eventline::enable_file_output_rotating(
-///     "logs/app.log",
-///     LogPolicy::default(),
-///     Some(RunHeader::new("my-daemon")),
-/// )?;
-/// ```
+///   before structured records begin.  A blank separator line is inserted
+///   automatically when appending to an existing non-empty file.
 pub fn enable_file_output_rotating(
-    path: impl AsRef<Path>,
+    path:   impl AsRef<Path>,
     policy: LogPolicy,
     header: Option<RunHeader>,
 ) -> io::Result<()> {
@@ -180,38 +204,86 @@ pub fn enable_file_output_rotating(
         f.flush()?;
     }
 
-    *rt().file_enabled.lock() = true;
-    *rt().file_path.lock() = Some(path.to_path_buf());
-    *rt().file_policy.lock() = Some(policy);
+    {
+        let mut cfg             = rt().config.write();
+        cfg.file_enabled             = true;
+        cfg.file_path                = Some(path.to_path_buf());
+        cfg.file_policy_max_bytes    = Some(policy.max_bytes);
+        cfg.file_policy_keep_backups = Some(policy.keep_backups);
+    }
     rebuild_writers();
     Ok(())
 }
 
 /// Disable file output (still records in memory).
 pub fn disable_file_output() {
-    *rt().file_enabled.lock() = false;
-    *rt().file_path.lock() = None;
-    *rt().file_policy.lock() = None;
+    {
+        let mut cfg             = rt().config.write();
+        cfg.file_enabled             = false;
+        cfg.file_path                = None;
+        cfg.file_policy_max_bytes    = None;
+        cfg.file_policy_keep_backups = None;
+    }
     rebuild_writers();
 }
 
 /// Disable all writers (still records in memory).
 pub fn disable_all_output() {
-    *rt().console_enabled.lock() = false;
-    *rt().file_enabled.lock() = false;
-    *rt().file_path.lock() = None;
-    *rt().file_policy.lock() = None;
+    {
+        let mut cfg             = rt().config.write();
+        cfg.console_enabled          = false;
+        cfg.file_enabled             = false;
+        cfg.file_path                = None;
+        cfg.file_policy_max_bytes    = None;
+        cfg.file_policy_keep_backups = None;
+    }
     rebuild_writers();
 }
 
+// ---------------------------------------------------------------------------
+// Hot path — emit
+// ---------------------------------------------------------------------------
+
 /// Emit an event into the journal.
-/// This is the core primitive macros call.
+///
+/// ### Performance notes
+///
+/// - The log-level check happens in the calling macro *before* `format!()` is
+///   evaluated, so suppressed messages never allocate a `String`.
+/// - The journal mutex is held only for the duration of a buffer push + a
+///   scope look-up clone.  It is **released before** the writer is called.
+/// - Writer I/O (`Mutex<writer>`) is therefore concurrent with buffer pushes
+///   from other threads.
+/// - Trim is amortised: the O(n) drain only runs every `TRIM_INTERVAL` calls.
 pub fn emit(kind: crate::core::EventKind, message: String, fields: crate::journal::Fields) {
-    let mut j = rt().journal.lock();
-    let _ = j.record(kind, message, fields);
-    j.trim_records(MAX_JOURNAL_RECORDS);
-    j.trim_scopes(MAX_JOURNAL_RECORDS);
+    // --- 1. Push to buffer; hold journal lock as briefly as possible. ---
+    let (record, scope) = {
+        let mut j = rt().journal.lock();
+        let (_, record, scope) = j.record_no_write(kind, message, fields);
+        (record, scope)
+        // Mutex<Journal> is released here.
+    };
+
+    // --- 2. Amortised trim (every TRIM_INTERVAL emits). ---
+    let count = rt().emit_count.fetch_add(1, Ordering::Relaxed);
+    if count % TRIM_INTERVAL == 0 {
+        let mut j = rt().journal.lock();
+        j.trim_records(MAX_JOURNAL_RECORDS);
+        j.trim_scopes(MAX_JOURNAL_RECORDS);
+    }
+
+    // --- 3. Write outside the journal lock. ---
+    //
+    // We re-check the log level here because `emit` can be called directly
+    // (not from a macro), so the macro-side early exit may not have fired.
+    if log_level::enabled_for_record(&record) {
+        let _ = rt().writer.lock().write_record(&record, scope.as_ref());
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Scope API
+// ---------------------------------------------------------------------------
 
 /// Enter a runtime scope and return an RAII guard that exits on drop.
 pub fn scope_guard(name: impl Into<String>) -> crate::core::RuntimeScopeGuard {
@@ -230,97 +302,111 @@ pub fn set_scope_exit_messages(id: crate::core::ScopeId, msgs: crate::core::Exit
 
 /// Exit a scope explicitly.
 pub fn exit_scope(id: crate::core::ScopeId, outcome: crate::core::Outcome) {
-    let _ = rt().journal.lock().exit_scope(id, outcome);
+    // Same two-phase approach: push record inside journal lock, write outside.
+    let payload = {
+        let mut j = rt().journal.lock();
+        let (_, payload) = j.exit_scope_no_write(id, outcome);
+        payload
+        // Mutex<Journal> released.
+    };
+
+    if let Some((record, scope)) = payload {
+        if log_level::enabled_for_record(&record) {
+            let _ = rt().writer.lock().write_record(&record, Some(&scope));
+        }
+    }
 }
 
-/// Flush sinks.
+// ---------------------------------------------------------------------------
+// Misc public API
+// ---------------------------------------------------------------------------
+
+/// Flush the active writer.
 pub fn flush() -> io::Result<()> {
-    rt().journal.lock().flush()
+    rt().writer.lock().flush()
 }
 
-/// Access snapshots (for saving/export).
+/// Snapshot of all in-memory records.
 pub fn records() -> Vec<crate::core::Record> {
     rt().journal.lock().records()
 }
 
+/// Snapshot of all in-memory scopes.
 pub fn scopes() -> Vec<crate::core::Scope> {
     rt().journal.lock().scopes()
 }
 
 // ---------------------------------------------------------------------------
-// Internal writer wiring
+// Internal — writer construction
 // ---------------------------------------------------------------------------
 
+/// Rebuild the active writer from the current config.
+///
+/// This is a no-op when the config has not changed since the last rebuild,
+/// so it is safe (and cheap) to call after every config setter.
 fn rebuild_writers() {
-    let console_enabled = *rt().console_enabled.lock();
-    let console_color = *rt().console_color.lock();
-    let console_duration = *rt().console_duration.lock();
-    let console_timestamp = *rt().console_timestamp.lock();
+    // Read config with a shared (read) lock — doesn't block other readers.
+    let cfg = rt().config.read().clone();
 
-    let file_enabled = *rt().file_enabled.lock();
-    let file_path = rt().file_path.lock().clone();
-    let file_policy = rt().file_policy.lock().clone();
-
-    let new_cfg = WriterCfg {
-        console_enabled,
-        console_color,
-        console_duration,
-        console_timestamp,
-        file_enabled,
-        file_path: file_path.clone(),
-        file_policy_max_bytes: file_policy.as_ref().map(|p| p.max_bytes),
-        file_policy_keep_backups: file_policy.as_ref().map(|p| p.keep_backups),
-    };
-
+    // Skip rebuild if nothing changed.
     {
-        let mut last = rt().last_writer_cfg.lock();
-        if last.as_ref() == Some(&new_cfg) {
+        let mut last = rt().last_cfg.lock();
+        if last.as_ref() == Some(&cfg) {
             return;
         }
-        *last = Some(new_cfg);
+        *last = Some(cfg.clone());
     }
 
-    let mut mw = MultiWriter::new();
+    // Build the new writer outside any hot-path lock.
+    let new_writer: Box<dyn crate::journal::Writer + Send> = {
+        let mut mw = MultiWriter::new();
 
-    if console_enabled {
-        mw.add(StdoutWriter::with_style(ConsoleStyle {
-            color: console_color,
-            show_scope: true,
-            show_duration: console_duration,
-            show_timestamp: console_timestamp,
-        }));
-    }
+        if cfg.console_enabled {
+            mw.add(StdoutWriter::with_style(ConsoleStyle {
+                color:          cfg.console_color,
+                show_scope:     true,
+                show_duration:  cfg.console_duration,
+                show_timestamp: cfg.console_timestamp,
+            }));
+        }
 
-    if file_enabled {
-        if let Some(path) = file_path {
-            let file_style = FileStyle {
-                show_timestamp: true,
-                show_scope: true,
-            };
-
-            match file_policy {
-                Some(policy) => {
-                    match RotatingFileWriter::with_style(&path, file_style, policy) {
-                        Ok(rfw) => mw.add(rfw),
-                        Err(_) => {}
+        if cfg.file_enabled {
+            if let Some(path) = &cfg.file_path {
+                let file_style = FileStyle {
+                    show_timestamp: true,
+                    show_scope:     true,
+                };
+                match cfg.file_policy() {
+                    Some(policy) => {
+                        match RotatingFileWriter::with_style(path, file_style, policy) {
+                            Ok(rfw) => mw.add(rfw),
+                            Err(e)  => eprintln!("[eventline] failed to open rotating log file: {e}"),
+                        }
                     }
-                }
-                None => {
-                    match FileWriter::with_style(&path, file_style) {
-                        Ok(fw) => mw.add(fw),
-                        Err(_) => {}
+                    None => {
+                        match FileWriter::with_style(path, file_style) {
+                            Ok(fw)  => mw.add(fw),
+                            Err(e)  => eprintln!("[eventline] failed to open log file: {e}"),
+                        }
                     }
                 }
             }
         }
-    }
 
-    if mw.is_empty() {
-        rt().journal.lock().set_writer(NoopWriter);
-    } else {
-        rt().journal.lock().set_writer(mw);
-    }
+        if mw.is_empty() {
+            Box::new(NoopWriter)
+        } else {
+            Box::new(mw)
+        }
+    };
+
+    // Swap in under the writer lock only.
+    *rt().writer.lock() = new_writer;
 }
+
+// ---------------------------------------------------------------------------
+// NoopWriter
+// ---------------------------------------------------------------------------
 
 /// Writer used when output is fully disabled.
 struct NoopWriter;
@@ -329,7 +415,7 @@ impl crate::journal::Writer for NoopWriter {
     fn write_record(
         &mut self,
         _record: &crate::core::Record,
-        _scope: Option<&crate::core::Scope>,
+        _scope:  Option<&crate::core::Scope>,
     ) -> io::Result<()> {
         Ok(())
     }

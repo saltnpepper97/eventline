@@ -1,89 +1,66 @@
+use crate::core::{EventKind, Record, RecordKind};
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use crate::core::{EventKind, Outcome, Record, RecordKind};
-
-/// Global log-level threshold for *emission* (writers/console).
+/// Logging verbosity level.
 ///
-/// Important: this does NOT affect journaling/recording.
-/// Eventline always keeps the full structured record in-memory (and/or persisted).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Variants are assigned explicit discriminants so we can store and compare
+/// them as a plain `u8` in an atomic without any locking.
 #[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
-    Debug   = 10,
-    Info    = 20,
-    Warning = 30,
-    Error   = 40,
+    Debug   = 0,
+    Info    = 1,
+    Warning = 2,
+    Error   = 3,
+    /// Suppress all output (records still land in the in-memory journal).
+    Off     = 4,
 }
 
-static GLOBAL_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
+impl LogLevel {
+    #[inline]
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Debug,
+            1 => Self::Info,
+            2 => Self::Warning,
+            3 => Self::Error,
+            _ => Self::Off,
+        }
+    }
+}
 
-/// Set the global log level used for writer emission.
+/// Single atomic byte — the only state needed for level checks.
+/// `Ordering::Relaxed` is correct here: a stale read just means one extra
+/// log line leaks through; that is far better than paying for sequentially-
+/// consistent ordering (a full memory fence) on every log call.
+static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
+
 pub fn set_log_level(level: LogLevel) {
-    GLOBAL_LEVEL.store(level as u8, Ordering::Relaxed);
+    LOG_LEVEL.store(level as u8, Ordering::Relaxed);
 }
 
-/// Read the current global log level.
 pub fn get_log_level() -> LogLevel {
-    match GLOBAL_LEVEL.load(Ordering::Relaxed) {
-        x if x == LogLevel::Debug as u8   => LogLevel::Debug,
-        x if x == LogLevel::Warning as u8 => LogLevel::Warning,
-        x if x == LogLevel::Error as u8   => LogLevel::Error,
-        _ => LogLevel::Info,
-    }
+    LogLevel::from_u8(LOG_LEVEL.load(Ordering::Relaxed))
 }
 
-/// Decide whether an *event kind* is enabled given the current global log level.
+/// HOT PATH — called from every log macro before `format!()` is evaluated.
 ///
-/// This is a **cheap, allocation-free fast path** intended for use *before*
-/// constructing Records or acquiring the journal lock.
-///
-/// Important:
-/// - This only gates *whether we should bother recording at all*.
-/// - It does NOT affect scope tracking or scope exit semantics.
-/// - When Debug is disabled, Debug events are completely elided.
-///
-/// This exists to keep hot paths (render loops, polling, transitions) fast.
+/// Inlined so the compiler can constant-fold / hoist the check when the level
+/// is known at compile time.
+#[inline(always)]
+pub fn level_enabled(kind: EventKind) -> bool {
+    let threshold = LOG_LEVEL.load(Ordering::Relaxed);
+    (kind as u8) >= threshold
+}
+
+/// Used inside the journal when the writer is deciding whether to emit a
+/// record that has already been pushed to the buffer.
 #[inline]
-pub fn enabled_for_event_kind(kind: EventKind) -> bool {
-    event_kind_level(kind) >= get_log_level()
-}
-
-/// Decide whether a fully-constructed record should be emitted to writers
-/// given the current log level.
-///
-/// Rules (solid defaults):
-/// - Event records: map EventKind -> LogLevel threshold.
-/// - ScopeExit records: emit at Info for success, Warn/Error for non-success
-///   (keeps failures visible even at higher log levels).
 pub fn enabled_for_record(record: &Record) -> bool {
-    let threshold = get_log_level();
-    let record_level = record_log_level(record);
-    record_level >= threshold
-}
-
-/// Compute a record’s effective log level for emission.
-pub fn record_log_level(record: &Record) -> LogLevel {
     match &record.kind {
-        RecordKind::Event { kind, .. } => event_kind_level(*kind),
-        RecordKind::ScopeExit { outcome, .. } => outcome_level(*outcome),
-        // If you later add more record variants, pick sensible defaults here.
-    }
-}
-
-fn event_kind_level(kind: EventKind) -> LogLevel {
-    // Adjust if your EventKind differs, but this is the typical mapping.
-    match kind {
-        EventKind::Debug   => LogLevel::Debug,
-        EventKind::Info    => LogLevel::Info,
-        EventKind::Warning => LogLevel::Warning,
-        EventKind::Error   => LogLevel::Error,
-    }
-}
-
-fn outcome_level(outcome: Outcome) -> LogLevel {
-    match outcome {
-        Outcome::Success => LogLevel::Debug,
-        Outcome::Aborted => LogLevel::Warning,
-        Outcome::Failure => LogLevel::Error,
+        RecordKind::Event { kind, .. } => level_enabled(*kind),
+        // Scope-exit lines are always emitted — they are structural, not
+        // verbosity-gated, and carry duration / outcome metadata.
+        RecordKind::ScopeExit { .. } => true,
     }
 }

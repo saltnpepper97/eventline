@@ -4,39 +4,54 @@ use std::sync::Arc;
 
 /// Thread-safe buffer for journal records and scopes.
 ///
-/// Design notes:
-/// - Records are append-only up to the configured cap; oldest are evicted.
-/// - Scopes are created once (enter) and later *finalized* exactly once (exit)
-///   by filling `exited_at`. This does not violate append-only record history; it
-///   completes scope metadata needed for duration/outcome analysis and replay.
+/// ### Design notes
+///
+/// - Records are append-only up to the configured cap; oldest are evicted on
+///   trim.
+/// - Scopes are created once (`push_scope`) and later *finalised* exactly once
+///   (`finalize_scope_exit`) by setting `exited_at`.  This completes scope
+///   metadata needed for duration/outcome analysis and does not violate the
+///   append-only record contract.
+/// - The inner `Arc<RwLock<Vec<_>>>` lets the `Buffer` be cheaply cloned (e.g.
+///   for snapshot export) while still sharing the underlying allocation.
 #[derive(Clone)]
 pub struct Buffer {
     records: Arc<RwLock<Vec<Record>>>,
-    scopes: Arc<RwLock<Vec<Scope>>>,
+    scopes:  Arc<RwLock<Vec<Scope>>>,
 }
 
 impl Buffer {
     pub fn new() -> Self {
         Self {
             records: Arc::new(RwLock::new(Vec::new())),
-            scopes: Arc::new(RwLock::new(Vec::new())),
+            scopes:  Arc::new(RwLock::new(Vec::new())),
         }
     }
 
     pub fn with_capacity(records: usize, scopes: usize) -> Self {
         Self {
             records: Arc::new(RwLock::new(Vec::with_capacity(records))),
-            scopes: Arc::new(RwLock::new(Vec::with_capacity(scopes))),
+            scopes:  Arc::new(RwLock::new(Vec::with_capacity(scopes))),
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Push
+    // -------------------------------------------------------------------------
+
+    #[inline]
     pub fn push_record(&self, record: Record) {
         self.records.write().push(record);
     }
 
+    #[inline]
     pub fn push_scope(&self, scope: Scope) {
         self.scopes.write().push(scope);
     }
+
+    // -------------------------------------------------------------------------
+    // Point look-ups
+    // -------------------------------------------------------------------------
 
     pub fn get_record(&self, idx: usize) -> Option<Record> {
         self.records.read().get(idx).cloned()
@@ -46,83 +61,78 @@ impl Buffer {
         self.scopes.read().get(idx).cloned()
     }
 
-    /// Lookup a record by its stable ID without cloning the whole buffer.
+    /// Look up a record by stable ID without cloning the whole buffer.
     pub fn get_record_by_id(&self, id: RecordId) -> Option<Record> {
-        self.records
-            .read()
-            .iter()
-            .find(|r| r.id == id)
-            .cloned()
+        self.records.read().iter().find(|r| r.id == id).cloned()
     }
 
-    /// Lookup a scope by its stable ID without cloning the whole buffer.
+    /// Look up a scope by stable ID without cloning the whole buffer.
     pub fn get_scope_by_id(&self, id: ScopeId) -> Option<Scope> {
-        self.scopes
-            .read()
-            .iter()
-            .find(|s| s.id == id)
-            .cloned()
+        self.scopes.read().iter().find(|s| s.id == id).cloned()
     }
+
+    // -------------------------------------------------------------------------
+    // Scope mutation
+    // -------------------------------------------------------------------------
 
     /// Set per-outcome exit messages for an existing scope.
     ///
-    /// Returns `true` if the scope existed and was updated, `false` otherwise.
-    ///
-    /// Notes:
-    /// - This is safe to call any time after `enter_scope` (even after exit),
-    ///   but typically you set it right after entering.
+    /// Returns `true` if the scope was found and updated.
     pub fn set_scope_exit_messages(&self, id: ScopeId, msgs: ExitMessages) -> bool {
         let mut scopes = self.scopes.write();
         if let Some(scope) = scopes.iter_mut().find(|s| s.id == id) {
-            if msgs.success.is_some() {
-                scope.exit_messages.success = msgs.success;
-            }
-            if msgs.failure.is_some() {
-                scope.exit_messages.failure = msgs.failure;
-            }
-            if msgs.aborted.is_some() {
-                scope.exit_messages.aborted = msgs.aborted;
-            }
+            if msgs.success.is_some()  { scope.exit_messages.success  = msgs.success;  }
+            if msgs.failure.is_some()  { scope.exit_messages.failure  = msgs.failure;  }
+            if msgs.aborted.is_some()  { scope.exit_messages.aborted  = msgs.aborted;  }
             true
         } else {
             false
         }
     }
 
-    /// Finalize (close) a scope by setting `exited_at` if it has not already been set.
+    /// Finalise a scope by setting `exited_at`.
     ///
-    /// Returns the updated scope snapshot, or `None` if:
-    /// - scope does not exist, or
-    /// - scope was already finalized (idempotence / safety).
+    /// Returns the updated scope snapshot, or `None` if the scope does not
+    /// exist or was already finalised (idempotence).
     pub fn finalize_scope_exit(&self, id: ScopeId, exited_at_millis: u64) -> Option<Scope> {
         let mut scopes = self.scopes.write();
         let scope = scopes.iter_mut().find(|s| s.id == id)?;
-
         if scope.exited_at.is_some() {
             return None;
         }
-
         scope.exited_at = Some(exited_at_millis);
         Some(scope.clone())
     }
 
+    // -------------------------------------------------------------------------
+    // Lengths
+    // -------------------------------------------------------------------------
+
+    #[inline]
     pub fn records_len(&self) -> usize {
         self.records.read().len()
     }
 
+    #[inline]
     pub fn scopes_len(&self) -> usize {
         self.scopes.read().len()
     }
 
-    /// Get a snapshot of all records (bulk export/debug).
+    // -------------------------------------------------------------------------
+    // Bulk snapshots (debug / export)
+    // -------------------------------------------------------------------------
+
     pub fn records_snapshot(&self) -> Vec<Record> {
         self.records.read().clone()
     }
 
-    /// Get a snapshot of all scopes (bulk export/debug).
     pub fn scopes_snapshot(&self) -> Vec<Scope> {
         self.scopes.read().clone()
     }
+
+    // -------------------------------------------------------------------------
+    // Trim
+    // -------------------------------------------------------------------------
 
     /// Drop the oldest records, keeping at most `max` entries.
     pub fn trim_records(&self, max: usize) {
@@ -133,10 +143,10 @@ impl Buffer {
         }
     }
 
-    /// Drop the oldest exited scopes, keeping at most `max` exited entries.
+    /// Drop the oldest *exited* scopes, keeping at most `max` exited entries.
     ///
-    /// Open scopes (no `exited_at`) are always retained regardless of count,
-    /// since they may still receive exit events or exit-message updates.
+    /// Open scopes (`exited_at` is `None`) are always retained because they
+    /// may still receive exit events or message updates.
     pub fn trim_scopes(&self, max: usize) {
         let mut scopes = self.scopes.write();
         let exited_count = scopes.iter().filter(|s| s.exited_at.is_some()).count();

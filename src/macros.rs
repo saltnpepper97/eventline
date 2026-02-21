@@ -1,24 +1,35 @@
 /// Log at INFO level.
+///
+/// The level check is performed *before* `format!()` so that when INFO is
+/// filtered out the entire call compiles down to a single atomic load and a
+/// branch.  No `String` is ever allocated for suppressed messages.
 #[macro_export]
 macro_rules! info {
     ($($arg:tt)*) => {{
-        $crate::runtime::emit(
-            $crate::core::EventKind::Info,
-            format!($($arg)*),
-            $crate::journal::Fields::default(),
-        );
+        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Info) {
+            $crate::runtime::emit(
+                $crate::core::EventKind::Info,
+                format!($($arg)*),
+                $crate::journal::Fields::new(),
+            );
+        }
     }};
 }
 
 /// Log at DEBUG level.
+///
+/// DEBUG is typically the noisiest level; skipping `format!()` here gives
+/// the largest win when debug output is suppressed (the common case in prod).
 #[macro_export]
 macro_rules! debug {
     ($($arg:tt)*) => {{
-        $crate::runtime::emit(
-            $crate::core::EventKind::Debug,
-            format!($($arg)*),
-            $crate::journal::Fields::default(),
-        );
+        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Debug) {
+            $crate::runtime::emit(
+                $crate::core::EventKind::Debug,
+                format!($($arg)*),
+                $crate::journal::Fields::new(),
+            );
+        }
     }};
 }
 
@@ -26,11 +37,13 @@ macro_rules! debug {
 #[macro_export]
 macro_rules! warn {
     ($($arg:tt)*) => {{
-        $crate::runtime::emit(
-            $crate::core::EventKind::Warning,
-            format!($($arg)*),
-            $crate::journal::Fields::default(),
-        );
+        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Warning) {
+            $crate::runtime::emit(
+                $crate::core::EventKind::Warning,
+                format!($($arg)*),
+                $crate::journal::Fields::new(),
+            );
+        }
     }};
 }
 
@@ -38,11 +51,13 @@ macro_rules! warn {
 #[macro_export]
 macro_rules! error {
     ($($arg:tt)*) => {{
-        $crate::runtime::emit(
-            $crate::core::EventKind::Error,
-            format!($($arg)*),
-            $crate::journal::Fields::default(),
-        );
+        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Error) {
+            $crate::runtime::emit(
+                $crate::core::EventKind::Error,
+                format!($($arg)*),
+                $crate::journal::Fields::new(),
+            );
+        }
     }};
 }
 
@@ -51,22 +66,23 @@ macro_rules! error {
 /// Forms:
 /// - `scope!("config", { ... })`
 /// - `scope!("config", success="loaded", { ... })`
+/// - `scope!("config", success="loaded", failure="failed", { ... })`
 /// - `scope!("config", success="loaded", failure="failed", aborted="aborted", { ... })`
 ///
 /// Exit messages only appear on the scope exit ("done:") line.
 #[macro_export]
 macro_rules! scope {
-    // ---------------------------------------------------------------------
-    // Base form — FAST PATH (no parsing, no messages)
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // Base form — no messages, zero overhead beyond entering/exiting the scope.
+    // -------------------------------------------------------------------------
     ($name:expr, $block:block) => {{
         let _guard = $crate::core::RuntimeScopeGuard::enter($name);
         $block
     }};
 
-    // ---------------------------------------------------------------------
-    // success-only form — FAST PATH
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // success-only
+    // -------------------------------------------------------------------------
     ($name:expr, success=$success:expr, $block:block) => {{
         let _guard = $crate::core::RuntimeScopeGuard::enter($name);
         $crate::runtime::set_scope_exit_messages(
@@ -80,9 +96,9 @@ macro_rules! scope {
         $block
     }};
 
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     // success + failure
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     ($name:expr, success=$success:expr, failure=$failure:expr, $block:block) => {{
         let _guard = $crate::core::RuntimeScopeGuard::enter($name);
         $crate::runtime::set_scope_exit_messages(
@@ -96,9 +112,9 @@ macro_rules! scope {
         $block
     }};
 
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     // success + failure + aborted
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
     (
         $name:expr,
         success=$success:expr,
@@ -118,4 +134,3 @@ macro_rules! scope {
         $block
     }};
 }
-
