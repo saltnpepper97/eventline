@@ -10,7 +10,12 @@ use parking_lot::Mutex;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::OnceLock;
+
+/// Maximum number of records the journal keeps in memory at any one time.
+/// Older records are dropped once this limit is exceeded.
+const MAX_JOURNAL_RECORDS: usize = 500;
 
 /// Global runtime state.
 ///
@@ -21,7 +26,7 @@ use std::sync::OnceLock;
 /// - `runtime`: global config + sinks + filtering policy.
 ///
 /// Important invariant:
-/// - The journal records the full structured history.
+/// - The journal records the full structured history up to MAX_JOURNAL_RECORDS.
 /// - Log level and output toggles only gate *emission* (writers), not recording.
 pub struct Runtime {
     journal: Mutex<Journal>,
@@ -34,10 +39,28 @@ pub struct Runtime {
 
     // File sink configuration
     file_enabled: Mutex<bool>,
-    file_path: Mutex<Option<std::path::PathBuf>>,
+    file_path: Mutex<Option<PathBuf>>,
 
     // Rotation policy; None means use plain FileWriter (no rotation).
     file_policy: Mutex<Option<LogPolicy>>,
+
+    // Snapshot of the config that was used the last time we built writers.
+    // rebuild_writers is skipped when the effective config hasn't changed.
+    last_writer_cfg: Mutex<Option<WriterCfg>>,
+}
+
+/// Snapshot of the writer-relevant config for change detection.
+#[derive(Debug, Clone, PartialEq)]
+struct WriterCfg {
+    console_enabled: bool,
+    console_color: bool,
+    console_duration: bool,
+    console_timestamp: bool,
+    file_enabled: bool,
+    file_path: Option<PathBuf>,
+    // LogPolicy doesn't impl PartialEq; compare via its fields instead.
+    file_policy_max_bytes: Option<u64>,
+    file_policy_keep_backups: Option<u32>,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -54,6 +77,8 @@ fn rt() -> &'static Runtime {
         file_enabled: Mutex::new(false),
         file_path: Mutex::new(None),
         file_policy: Mutex::new(None),
+
+        last_writer_cfg: Mutex::new(None),
     })
 }
 
@@ -136,18 +161,15 @@ pub fn enable_file_output_rotating(
         fs::create_dir_all(parent)?;
     }
 
-    // Determine whether we need to rotate and whether to insert a blank
-    // separator before the header.
     let needs_separator = match fs::metadata(path) {
         Ok(m) if m.len() >= policy.max_bytes => {
             rotation::rotate(path, policy.keep_backups)?;
-            false // fresh file after rotation — no separator needed
+            false
         }
-        Ok(m) if m.len() > 0 => true, // existing content — insert blank line
+        Ok(m) if m.len() > 0 => true,
         _ => false,
     };
 
-    // Write the run header as raw bytes, bypassing the record pipeline.
     if let Some(hdr) = header {
         let mut f = OpenOptions::new().create(true).append(true).open(path)?;
         if needs_separator {
@@ -187,6 +209,7 @@ pub fn disable_all_output() {
 pub fn emit(kind: crate::core::EventKind, message: String, fields: crate::journal::Fields) {
     let mut j = rt().journal.lock();
     let _ = j.record(kind, message, fields);
+    j.trim_records(MAX_JOURNAL_RECORDS);
 }
 
 /// Enter a runtime scope and return an RAII guard that exits on drop.
@@ -237,6 +260,25 @@ fn rebuild_writers() {
     let file_path = rt().file_path.lock().clone();
     let file_policy = rt().file_policy.lock().clone();
 
+    let new_cfg = WriterCfg {
+        console_enabled,
+        console_color,
+        console_duration,
+        console_timestamp,
+        file_enabled,
+        file_path: file_path.clone(),
+        file_policy_max_bytes: file_policy.as_ref().map(|p| p.max_bytes),
+        file_policy_keep_backups: file_policy.as_ref().map(|p| p.keep_backups),
+    };
+
+    {
+        let mut last = rt().last_writer_cfg.lock();
+        if last.as_ref() == Some(&new_cfg) {
+            return;
+        }
+        *last = Some(new_cfg);
+    }
+
     let mut mw = MultiWriter::new();
 
     if console_enabled {
@@ -256,14 +298,12 @@ fn rebuild_writers() {
             };
 
             match file_policy {
-                // Rotating writer — uses the stored LogPolicy.
                 Some(policy) => {
                     match RotatingFileWriter::with_style(&path, file_style, policy) {
                         Ok(rfw) => mw.add(rfw),
-                        Err(_) => {} // avoid recursion; failure is silent here
+                        Err(_) => {}
                     }
                 }
-                // Plain writer — no rotation.
                 None => {
                     match FileWriter::with_style(&path, file_style) {
                         Ok(fw) => mw.add(fw),

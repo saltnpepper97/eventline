@@ -5,7 +5,7 @@ use std::sync::Arc;
 /// Thread-safe buffer for journal records and scopes.
 ///
 /// Design notes:
-/// - Records are append-only.
+/// - Records are append-only up to the configured cap; oldest are evicted.
 /// - Scopes are created once (enter) and later *finalized* exactly once (exit)
 ///   by filling `exited_at`. This does not violate append-only record history; it
 ///   completes scope metadata needed for duration/outcome analysis and replay.
@@ -70,11 +70,10 @@ impl Buffer {
     ///
     /// Notes:
     /// - This is safe to call any time after `enter_scope` (even after exit),
-    ///   but typically you set it right after entering.    
+    ///   but typically you set it right after entering.
     pub fn set_scope_exit_messages(&self, id: ScopeId, msgs: ExitMessages) -> bool {
         let mut scopes = self.scopes.write();
         if let Some(scope) = scopes.iter_mut().find(|s| s.id == id) {
-            // Merge semantics: only overwrite fields that are Some(_).
             if msgs.success.is_some() {
                 scope.exit_messages.success = msgs.success;
             }
@@ -99,7 +98,6 @@ impl Buffer {
         let mut scopes = self.scopes.write();
         let scope = scopes.iter_mut().find(|s| s.id == id)?;
 
-        // Do not rewrite completed scopes: exit is a one-time transition.
         if scope.exited_at.is_some() {
             return None;
         }
@@ -124,6 +122,21 @@ impl Buffer {
     /// Get a snapshot of all scopes (bulk export/debug).
     pub fn scopes_snapshot(&self) -> Vec<Scope> {
         self.scopes.read().clone()
+    }
+
+    /// Drop the oldest records, keeping at most `max` entries.
+    ///
+    /// Scopes are left untouched: a scope may still be open (no `exited_at`)
+    /// when its early records are trimmed, and removing it would orphan the
+    /// exit event. Scope count is bounded by the number of concurrent/recent
+    /// scopes rather than total lifetime record count, so it does not grow
+    /// unboundedly the same way.
+    pub fn trim_records(&self, max: usize) {
+        let mut records = self.records.write();
+        let len = records.len();
+        if len > max {
+            records.drain(..len - max);
+        }
     }
 
     pub fn clear(&self) {

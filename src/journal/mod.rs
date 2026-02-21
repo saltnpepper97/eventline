@@ -91,6 +91,11 @@ impl Journal {
         id
     }
 
+    /// Drop the oldest records from the buffer, keeping at most `max` entries.
+    pub fn trim_records(&mut self, max: usize) {
+        self.buffer.trim_records(max);
+    }
+
     /// Update per-outcome exit messages for an existing scope.
     ///
     /// Returns true if the scope existed and was updated.
