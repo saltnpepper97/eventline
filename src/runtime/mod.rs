@@ -210,6 +210,7 @@ pub fn emit(kind: crate::core::EventKind, message: String, fields: crate::journa
     let mut j = rt().journal.lock();
     let _ = j.record(kind, message, fields);
     j.trim_records(MAX_JOURNAL_RECORDS);
+    j.trim_scopes(MAX_JOURNAL_RECORDS);
 }
 
 /// Enter a runtime scope and return an RAII guard that exits on drop.

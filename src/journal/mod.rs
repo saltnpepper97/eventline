@@ -91,6 +91,12 @@ impl Journal {
         id
     }
 
+    /// Drop the oldest exited scopes from the buffer, keeping at most `max` entries.
+    /// Only scopes with a set `exited_at` are eligible; open scopes are never removed.
+    pub fn trim_scopes(&mut self, max: usize) {
+        self.buffer.trim_scopes(max);
+    }
+
     /// Drop the oldest records from the buffer, keeping at most `max` entries.
     pub fn trim_records(&mut self, max: usize) {
         self.buffer.trim_records(max);

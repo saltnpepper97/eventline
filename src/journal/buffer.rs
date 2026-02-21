@@ -125,18 +125,34 @@ impl Buffer {
     }
 
     /// Drop the oldest records, keeping at most `max` entries.
-    ///
-    /// Scopes are left untouched: a scope may still be open (no `exited_at`)
-    /// when its early records are trimmed, and removing it would orphan the
-    /// exit event. Scope count is bounded by the number of concurrent/recent
-    /// scopes rather than total lifetime record count, so it does not grow
-    /// unboundedly the same way.
     pub fn trim_records(&self, max: usize) {
         let mut records = self.records.write();
         let len = records.len();
         if len > max {
             records.drain(..len - max);
         }
+    }
+
+    /// Drop the oldest exited scopes, keeping at most `max` exited entries.
+    ///
+    /// Open scopes (no `exited_at`) are always retained regardless of count,
+    /// since they may still receive exit events or exit-message updates.
+    pub fn trim_scopes(&self, max: usize) {
+        let mut scopes = self.scopes.write();
+        let exited_count = scopes.iter().filter(|s| s.exited_at.is_some()).count();
+        if exited_count <= max {
+            return;
+        }
+        let to_drop = exited_count - max;
+        let mut dropped = 0;
+        scopes.retain(|s| {
+            if dropped < to_drop && s.exited_at.is_some() {
+                dropped += 1;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn clear(&self) {
