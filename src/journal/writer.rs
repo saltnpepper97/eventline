@@ -3,8 +3,8 @@ use crate::journal::rotation::{self, LogPolicy};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use parking_lot::Mutex;
+use std::sync::mpsc;
+use std::thread;
 
 use crate::render::{self, ConsoleStyle, FileStyle};
 
@@ -12,6 +12,109 @@ use crate::render::{self, ConsoleStyle, FileStyle};
 pub trait Writer: Send + Sync {
     fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()>;
     fn flush(&mut self) -> io::Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// AsyncWriter (background thread)
+// ---------------------------------------------------------------------------
+
+/// Background-thread writer wrapper.
+///
+/// - `write_record()` never blocks on I/O.
+/// - Uses a bounded queue; when full, records are dropped to avoid unbounded
+///   memory growth.
+/// - `flush()` is synchronous (waits for the background thread to flush).
+pub struct AsyncWriter {
+    tx: mpsc::SyncSender<Msg>,
+    // We keep the handle so the thread isn't "detached forever".
+    // Dropping joins to avoid leaving a runaway thread at shutdown.
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+enum Msg {
+    Record(Record, Option<Scope>),
+    Flush(mpsc::Sender<io::Result<()>>),
+    Shutdown,
+}
+
+impl AsyncWriter {
+    /// Spawn a background thread that owns `inner` and processes messages.
+    ///
+    /// `queue_cap` bounds memory use; when full, `write_record` drops the event.
+    pub fn spawn(inner: Box<dyn Writer + Send>, queue_cap: usize) -> Self {
+        let (tx, rx) = mpsc::sync_channel::<Msg>(queue_cap.max(1));
+
+        let handle = thread::Builder::new()
+            .name("eventline-writer".to_string())
+            .spawn(move || {
+                let mut w = inner;
+
+                while let Ok(msg) = rx.recv() {
+                    match msg {
+                        Msg::Record(rec, scope) => {
+                            // Best-effort: ignore writer errors here to avoid wedging.
+                            let _ = w.write_record(&rec, scope.as_ref());
+                        }
+                        Msg::Flush(reply) => {
+                            let res = w.flush();
+                            let _ = reply.send(res);
+                        }
+                        Msg::Shutdown => {
+                            let _ = w.flush();
+                            break;
+                        }
+                    }
+                }
+
+                let _ = w.flush();
+            })
+            .ok();
+
+        Self {
+            tx,
+            handle,
+        }
+    }
+}
+
+impl Drop for AsyncWriter {
+    fn drop(&mut self) {
+        // Best-effort shutdown.
+        let _ = self.tx.try_send(Msg::Shutdown);
+
+        if let Some(h) = self.handle.take() {
+            // Join to avoid leaving a thread around at process shutdown.
+            // If the thread already exited, this is instant.
+            let _ = h.join();
+        }
+    }
+}
+
+impl Writer for AsyncWriter {
+    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
+        // Clone into the queue so the background thread owns the data.
+        // This is the price paid to keep the hot path non-blocking.
+        let rec = record.clone();
+        let sc = scope.cloned();
+
+        // Never block the caller: drop if the queue is full.
+        let _ = self.tx.try_send(Msg::Record(rec, sc));
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        // If we can't enqueue flush, treat as success (nothing we can do).
+        if self.tx.try_send(Msg::Flush(reply_tx)).is_ok() {
+            // Wait for the writer thread to flush.
+            match reply_rx.recv() {
+                Ok(res) => res,
+                Err(_) => Ok(()),
+            }
+        } else {
+            Ok(())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -107,28 +210,11 @@ impl Writer for FileWriter {
 // RotatingFileWriter
 // ---------------------------------------------------------------------------
 
-/// Writer that appends to a file and rotates it when it exceeds a size limit.
-///
-/// Rotation happens *before* writing a record that would push the file past
-/// `policy.max_bytes`. The active file is renamed to `<path>.1`, older
-/// backups are shifted up, and a fresh file is opened.
-///
-/// The number of retained backups is controlled by `policy.keep_backups`.
-/// Setting it to 0 simply deletes the active file on rotation.
-///
-/// # Note on run headers
-///
-/// If you want a run header at the top of every fresh log file (including
-/// rotated ones), you can write it through [`runtime::write_run_header`] at
-/// startup. The header written after rotation is handled automatically when
-/// you supply a `RunHeader` to [`runtime::enable_file_output_rotating`].
 pub struct RotatingFileWriter {
     path: PathBuf,
     file: File,
     style: FileStyle,
     policy: LogPolicy,
-    /// Bytes written to the current file handle (used to avoid a syscall on
-    /// every record; we accept a small over-shoot rather than exact tracking).
     current_size: u64,
 }
 
@@ -148,7 +234,6 @@ impl RotatingFileWriter {
             fs::create_dir_all(parent)?;
         }
 
-        // Rotate *before* opening if the file is already at or past the limit.
         let current_size = match fs::metadata(&path) {
             Ok(m) if m.len() >= policy.max_bytes => {
                 rotation::rotate(&path, policy.keep_backups)?;
@@ -173,7 +258,6 @@ impl RotatingFileWriter {
         })
     }
 
-    /// Rotate the current file and open a fresh one.
     fn rotate_and_reopen(&mut self) -> io::Result<()> {
         self.file.flush()?;
         rotation::rotate(&self.path, self.policy.keep_backups)?;
@@ -209,12 +293,6 @@ impl Writer for RotatingFileWriter {
 // MultiWriter
 // ---------------------------------------------------------------------------
 
-/// Combines multiple writers.
-///
-/// Semantics:
-/// - All writers are attempted in order.
-/// - First error stops processing and is returned.
-/// - This keeps failure visible and avoids silent partial output.
 pub struct MultiWriter {
     writers: Vec<Box<dyn Writer>>,
 }
@@ -256,43 +334,5 @@ impl Writer for MultiWriter {
             w.flush()?;
         }
         Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SyncWriter
-// ---------------------------------------------------------------------------
-
-/// Thread-safe writer wrapper.
-///
-/// This allows writers to be used behind shared runtime state without requiring
-/// `&mut` access from multiple call sites.
-pub struct SyncWriter {
-    inner: Arc<Mutex<Box<dyn Writer>>>,
-}
-
-impl SyncWriter {
-    pub fn new(writer: impl Writer + 'static) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(Box::new(writer))),
-        }
-    }
-}
-
-impl Clone for SyncWriter {
-    fn clone(&self) -> Self {
-        Self {
-            inner: Arc::clone(&self.inner),
-        }
-    }
-}
-
-impl Writer for SyncWriter {
-    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
-        self.inner.lock().write_record(record, scope)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.lock().flush()
     }
 }

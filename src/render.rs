@@ -51,7 +51,7 @@ pub fn render_console(record: &Record, scope: Option<&Scope>, style: ConsoleStyl
             if style.show_scope {
                 if let Some(s) = scope {
                     out.push(' ');
-                    out.push_str(&format!("({})", scope_label(s))); // no exit message on events
+                    out.push_str(&format!("({})", scope_label(s)));
                 }
             }
         }
@@ -61,7 +61,7 @@ pub fn render_console(record: &Record, scope: Option<&Scope>, style: ConsoleStyl
             out.push(' ');
 
             if let Some(s) = scope {
-                out.push_str(&scope_exit_label(s, *outcome)); // includes optional exit message
+                out.push_str(&scope_exit_label(s, *outcome));
             } else {
                 out.push_str("unknown-scope");
             }
@@ -95,7 +95,7 @@ pub fn render_file(record: &Record, scope: Option<&Scope>, style: FileStyle) -> 
             if style.show_scope {
                 if let Some(s) = scope {
                     out.push(' ');
-                    out.push_str(&format!("({})", scope_label(s))); // no exit message on events
+                    out.push_str(&format!("({})", scope_label(s)));
                 }
             }
         }
@@ -103,7 +103,7 @@ pub fn render_file(record: &Record, scope: Option<&Scope>, style: FileStyle) -> 
         RecordKind::ScopeExit { outcome, duration_ns } => {
             out.push_str("done: ");
             if let Some(s) = scope {
-                out.push_str(&scope_exit_label(s, *outcome)); // includes optional exit message
+                out.push_str(&scope_exit_label(s, *outcome));
             } else {
                 out.push_str("unknown-scope");
             }
@@ -204,26 +204,42 @@ fn format_duration_ns(ns: u64) -> String {
     }
 }
 
+/// Fast local-time formatter:
+/// - On Unix: uses `localtime_r` (no subprocess).
+/// - Elsewhere: falls back to UTC.
 fn format_timestamp_ns_local(time_ns: u64) -> String {
-    use std::process::Command;
+    #[cfg(unix)]
+    {
+        use libc::{localtime_r, time_t, tm};
+        let ms_total = time_ns / 1_000_000;
+        let secs = (ms_total / 1000) as i64;
+        let millis = (ms_total % 1000) as u32;
 
-    let ms_total = time_ns / 1_000_000;
-    let secs = (ms_total / 1000) as i64;
-    let millis = (ms_total % 1000) as u32;
+        let mut t: tm = unsafe { std::mem::zeroed() };
+        let tt: time_t = secs as time_t;
 
-    // Format local time using system tz rules (DST etc.)
-    let out = Command::new("sh")
-        .arg("-lc")
-        .arg(format!("date -d @{} '+%Y-%m-%d %H:%M:%S'", secs))
-        .output();
-
-    match out {
-        Ok(o) if o.status.success() => {
-            let mut s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            s.push_str(&format!(".{:03}", millis));
-            s
+        let ok = unsafe { localtime_r(&tt as *const time_t, &mut t as *mut tm) };
+        if ok.is_null() {
+            return format_timestamp_ns_utc(time_ns);
         }
-        _ => format_timestamp_ns_utc(time_ns), // fallback
+
+        // tm_year is years since 1900; tm_mon is 0-based.
+        let year = t.tm_year + 1900;
+        let month = (t.tm_mon + 1) as i32;
+        let day = t.tm_mday as i32;
+        let hour = t.tm_hour as i32;
+        let min = t.tm_min as i32;
+        let sec = t.tm_sec as i32;
+
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+            year, month, day, hour, min, sec, millis
+        )
+    }
+
+    #[cfg(not(unix))]
+    {
+        format_timestamp_ns_utc(time_ns)
     }
 }
 

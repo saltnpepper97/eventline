@@ -12,6 +12,7 @@ categories = ["development-tools::debugging", "development-tools::profiling"]
 rust-version = "1.89"
 
 [dependencies]
+libc = "0.2.182"
 parking_lot = "0.12.5"
 serde = { version = "1.0.228", features = ["derive"] }
 
