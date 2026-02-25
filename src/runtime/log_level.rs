@@ -50,7 +50,13 @@ pub fn get_log_level() -> LogLevel {
 #[inline(always)]
 pub fn level_enabled(kind: EventKind) -> bool {
     let threshold = LOG_LEVEL.load(Ordering::Relaxed);
-    (kind as u8) >= threshold
+    let k = match kind {
+        EventKind::Debug   => LogLevel::Debug as u8,
+        EventKind::Info    => LogLevel::Info as u8,
+        EventKind::Warning => LogLevel::Warning as u8,
+        EventKind::Error   => LogLevel::Error as u8,
+    };
+    k >= threshold
 }
 
 /// Used inside the journal when the writer is deciding whether to emit a

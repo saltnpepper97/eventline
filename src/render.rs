@@ -207,40 +207,9 @@ fn format_duration_ns(ns: u64) -> String {
 /// Fast local-time formatter:
 /// - On Unix: uses `localtime_r` (no subprocess).
 /// - Elsewhere: falls back to UTC.
+/// Local timestamp formatter (UTC-only, no libc, no FFI).
 fn format_timestamp_ns_local(time_ns: u64) -> String {
-    #[cfg(unix)]
-    {
-        use libc::{localtime_r, time_t, tm};
-        let ms_total = time_ns / 1_000_000;
-        let secs = (ms_total / 1000) as i64;
-        let millis = (ms_total % 1000) as u32;
-
-        let mut t: tm = unsafe { std::mem::zeroed() };
-        let tt: time_t = secs as time_t;
-
-        let ok = unsafe { localtime_r(&tt as *const time_t, &mut t as *mut tm) };
-        if ok.is_null() {
-            return format_timestamp_ns_utc(time_ns);
-        }
-
-        // tm_year is years since 1900; tm_mon is 0-based.
-        let year = t.tm_year + 1900;
-        let month = (t.tm_mon + 1) as i32;
-        let day = t.tm_mday as i32;
-        let hour = t.tm_hour as i32;
-        let min = t.tm_min as i32;
-        let sec = t.tm_sec as i32;
-
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-            year, month, day, hour, min, sec, millis
-        )
-    }
-
-    #[cfg(not(unix))]
-    {
-        format_timestamp_ns_utc(time_ns)
-    }
+    format_timestamp_ns_utc(time_ns)
 }
 
 fn format_timestamp_ns_utc(time_ns: u64) -> String {
