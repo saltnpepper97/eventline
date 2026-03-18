@@ -32,11 +32,13 @@ const WRITER_QUEUE_CAP: usize = 2048;
 #[derive(Debug, Clone, PartialEq)]
 struct Config {
     console_enabled: bool,
+    console_level: LogLevel,
     console_color: bool,
     console_duration: bool,
     console_timestamp: bool,
 
     file_enabled: bool,
+    file_level: LogLevel,
     file_path: Option<PathBuf>,
 
     file_policy_max_bytes: Option<u64>,
@@ -47,11 +49,15 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             console_enabled: true,
+            console_level: LogLevel::Info,
             console_color: true,
             console_duration: false,
             console_timestamp: false,
+
             file_enabled: false,
+            file_level: LogLevel::Debug,
             file_path: None,
+
             file_policy_max_bytes: None,
             file_policy_keep_backups: None,
         }
@@ -64,6 +70,20 @@ impl Config {
             max_bytes: self.file_policy_max_bytes?,
             keep_backups: self.file_policy_keep_backups?,
         })
+    }
+
+    fn effective_level(&self) -> LogLevel {
+        let mut level = LogLevel::Off;
+
+        if self.console_enabled && self.console_level < level {
+            level = self.console_level;
+        }
+
+        if self.file_enabled && self.file_level < level {
+            level = self.file_level;
+        }
+
+        level
     }
 }
 
@@ -98,7 +118,7 @@ fn rt() -> &'static Runtime {
 // Public API — initialisation & configuration
 // ---------------------------------------------------------------------------
 
-/// Initialise the runtime.  Idempotent; safe to call multiple times.
+/// Initialise the runtime. Idempotent; safe to call multiple times.
 pub async fn init() {
     let _ = rt();
     rebuild_writers();
@@ -106,6 +126,11 @@ pub async fn init() {
 
 pub fn enable_console_output(enable: bool) {
     rt().config.write().console_enabled = enable;
+    rebuild_writers();
+}
+
+pub fn set_console_level(level: LogLevel) {
+    rt().config.write().console_level = level;
     rebuild_writers();
 }
 
@@ -128,11 +153,17 @@ pub fn enable_file_output(path: impl AsRef<Path>) -> io::Result<()> {
     let mut cfg = rt().config.write();
     cfg.file_enabled = true;
     cfg.file_path = Some(path.as_ref().to_path_buf());
+    cfg.file_level = LogLevel::Debug;
     cfg.file_policy_max_bytes = None;
     cfg.file_policy_keep_backups = None;
     drop(cfg);
     rebuild_writers();
     Ok(())
+}
+
+pub fn set_file_level(level: LogLevel) {
+    rt().config.write().file_level = level;
+    rebuild_writers();
 }
 
 pub fn enable_file_output_rotating(
@@ -168,6 +199,7 @@ pub fn enable_file_output_rotating(
     {
         let mut cfg = rt().config.write();
         cfg.file_enabled = true;
+        cfg.file_level = LogLevel::Debug;
         cfg.file_path = Some(path.to_path_buf());
         cfg.file_policy_max_bytes = Some(policy.max_bytes);
         cfg.file_policy_keep_backups = Some(policy.keep_backups);
@@ -217,9 +249,7 @@ pub fn emit(kind: crate::core::EventKind, message: String, fields: crate::journa
         j.trim_scopes(MAX_JOURNAL_RECORDS);
     }
 
-    if log_level::enabled_for_record(&record) {
-        let _ = rt().writer.lock().write_record(&record, scope.as_ref());
-    }
+    let _ = rt().writer.lock().write_record(&record, scope.as_ref());
 }
 
 // ---------------------------------------------------------------------------
@@ -246,9 +276,7 @@ pub fn exit_scope(id: crate::core::ScopeId, outcome: crate::core::Outcome) {
     };
 
     if let Some((record, scope)) = payload {
-        if log_level::enabled_for_record(&record) {
-            let _ = rt().writer.lock().write_record(&record, Some(&scope));
-        }
+        let _ = rt().writer.lock().write_record(&record, Some(&scope));
     }
 }
 
@@ -269,6 +297,57 @@ pub fn scopes() -> Vec<crate::core::Scope> {
 }
 
 // ---------------------------------------------------------------------------
+// Internal — filtering helpers
+// ---------------------------------------------------------------------------
+
+fn record_enabled_at_level(record: &crate::core::Record, min_level: LogLevel) -> bool {
+    match &record.kind {
+        crate::core::RecordKind::Event { kind, .. } => {
+            let record_level = match kind {
+                crate::core::EventKind::Debug => LogLevel::Debug,
+                crate::core::EventKind::Info => LogLevel::Info,
+                crate::core::EventKind::Warning => LogLevel::Warning,
+                crate::core::EventKind::Error => LogLevel::Error,
+            };
+            record_level >= min_level
+        }
+        crate::core::RecordKind::ScopeExit { .. } => true,
+    }
+}
+
+struct FilteredWriter<W> {
+    inner: W,
+    min_level: LogLevel,
+}
+
+impl<W> FilteredWriter<W> {
+    fn new(inner: W, min_level: LogLevel) -> Self {
+        Self { inner, min_level }
+    }
+}
+
+impl<W> crate::journal::Writer for FilteredWriter<W>
+where
+    W: crate::journal::Writer,
+{
+    fn write_record(
+        &mut self,
+        record: &crate::core::Record,
+        scope: Option<&crate::core::Scope>,
+    ) -> io::Result<()> {
+        if record_enabled_at_level(record, self.min_level) {
+            self.inner.write_record(record, scope)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal — writer construction
 // ---------------------------------------------------------------------------
 
@@ -283,17 +362,19 @@ fn rebuild_writers() {
         *last = Some(cfg.clone());
     }
 
-    // Build the actual writer chain.
+    set_log_level(cfg.effective_level());
+
     let inner: Box<dyn crate::journal::Writer + Send> = {
         let mut mw = MultiWriter::new();
 
         if cfg.console_enabled {
-            mw.add(StdoutWriter::with_style(ConsoleStyle {
+            let stdout = StdoutWriter::with_style(ConsoleStyle {
                 color: cfg.console_color,
                 show_scope: true,
                 show_duration: cfg.console_duration,
                 show_timestamp: cfg.console_timestamp,
-            }));
+            });
+            mw.add(FilteredWriter::new(stdout, cfg.console_level));
         }
 
         if cfg.file_enabled {
@@ -302,13 +383,14 @@ fn rebuild_writers() {
                     show_timestamp: true,
                     show_scope: true,
                 };
+
                 match cfg.file_policy() {
                     Some(policy) => match RotatingFileWriter::with_style(path, file_style, policy) {
-                        Ok(rfw) => mw.add(rfw),
+                        Ok(rfw) => mw.add(FilteredWriter::new(rfw, cfg.file_level)),
                         Err(e) => eprintln!("[eventline] failed to open rotating log file: {e}"),
                     },
                     None => match FileWriter::with_style(path, file_style) {
-                        Ok(fw) => mw.add(fw),
+                        Ok(fw) => mw.add(FilteredWriter::new(fw, cfg.file_level)),
                         Err(e) => eprintln!("[eventline] failed to open log file: {e}"),
                     },
                 }
@@ -322,9 +404,7 @@ fn rebuild_writers() {
         }
     };
 
-    // Always wrap in AsyncWriter so caller threads never block on I/O.
     let async_writer = AsyncWriter::spawn(inner, WRITER_QUEUE_CAP);
-
     *rt().writer.lock() = Box::new(async_writer);
 }
 

@@ -1,4 +1,5 @@
 use crate::core::{EventKind, Outcome, Record, RecordKind, Scope};
+use time::{OffsetDateTime, UtcOffset};
 
 /// Rendering preferences for console output.
 #[derive(Debug, Clone, Copy)]
@@ -204,51 +205,60 @@ fn format_duration_ns(ns: u64) -> String {
     }
 }
 
-/// Fast local-time formatter:
-/// - On Unix: uses `localtime_r` (no subprocess).
-/// - Elsewhere: falls back to UTC.
-/// Local timestamp formatter (UTC-only, no libc, no FFI).
+/// Format a timestamp using the runner's local time when available.
+/// Falls back to UTC if the local offset cannot be determined.
 fn format_timestamp_ns_local(time_ns: u64) -> String {
-    format_timestamp_ns_utc(time_ns)
+    let dt_utc = match datetime_from_unix_ns(time_ns) {
+        Some(dt) => dt,
+        None => return format_timestamp_ns_utc(time_ns),
+    };
+
+    match UtcOffset::current_local_offset() {
+        Ok(offset) => format_offset_datetime(dt_utc.to_offset(offset), true),
+        Err(_) => format_offset_datetime(dt_utc, false),
+    }
 }
 
 fn format_timestamp_ns_utc(time_ns: u64) -> String {
-    let ms_total = time_ns / 1_000_000;
-    let secs = (ms_total / 1000) as i64;
-    let millis = (ms_total % 1000) as u32;
-
-    let (year, month, day, hour, min, sec) = unix_seconds_to_utc_ymdhms(secs);
-
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-        year, month, day, hour, min, sec, millis
-    )
+    match datetime_from_unix_ns(time_ns) {
+        Some(dt) => format_offset_datetime(dt, false),
+        None => "1970-01-01 00:00:00.000".to_string(),
+    }
 }
 
-fn unix_seconds_to_utc_ymdhms(secs: i64) -> (i32, u32, u32, u32, u32, u32) {
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
+fn datetime_from_unix_ns(time_ns: u64) -> Option<OffsetDateTime> {
+    let secs = (time_ns / 1_000_000_000) as i64;
+    let nanos = (time_ns % 1_000_000_000) as u32;
 
-    let hour = (sod / 3600) as u32;
-    let min = ((sod % 3600) / 60) as u32;
-    let sec = (sod % 60) as u32;
-
-    let (year, month, day) = civil_from_days(days);
-
-    (year, month, day, hour, min, sec)
+    let dt = OffsetDateTime::from_unix_timestamp(secs).ok()?;
+    dt.replace_nanosecond(nanos).ok()
 }
 
-fn civil_from_days(days_since_unix: i64) -> (i32, u32, u32) {
-    let z = days_since_unix + 719468;
-    let era = (if z >= 0 { z } else { z - 146096 }).div_euclid(146097);
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096).div_euclid(365);
-    let y = (yoe as i32) + (era as i32) * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2).div_euclid(153);
-    let d = doy - (153 * mp + 2).div_euclid(5) + 1;
-    let m = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + if m <= 2 { 1 } else { 0 };
+fn format_offset_datetime(dt: OffsetDateTime, include_offset: bool) -> String {
+    let year = dt.year();
+    let month = dt.month() as u8;
+    let day = dt.day();
+    let hour = dt.hour();
+    let minute = dt.minute();
+    let second = dt.second();
+    let millis = dt.nanosecond() / 1_000_000;
 
-    (year, m as u32, d as u32)
+    if include_offset {
+        let offset = dt.offset();
+        let total_secs = offset.whole_seconds();
+        let sign = if total_secs >= 0 { '+' } else { '-' };
+        let abs = total_secs.unsigned_abs();
+        let off_h = abs / 3600;
+        let off_m = (abs % 3600) / 60;
+
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} {}{:02}{:02}",
+            year, month, day, hour, minute, second, millis, sign, off_h, off_m
+        )
+    } else {
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+            year, month, day, hour, minute, second, millis
+        )
+    }
 }
