@@ -1,8 +1,9 @@
-use super::{EventKind, Outcome, RecordId, ScopeId};
 use super::value::Value;
+use super::{EventKind, Outcome, RecordId, ScopeId};
 use crate::journal::fields::Fields;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RecordKind {
     Event {
         kind: EventKind,
@@ -15,7 +16,7 @@ pub enum RecordKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Record {
     pub id: RecordId,
     pub scope: Option<ScopeId>,

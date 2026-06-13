@@ -4,9 +4,9 @@
 //! severity, importance, or visibility. Filtering and rendering are handled
 //! by writers and renderers.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
     Info,
     Warning,

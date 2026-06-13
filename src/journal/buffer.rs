@@ -17,21 +17,21 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Buffer {
     records: Arc<RwLock<Vec<Record>>>,
-    scopes:  Arc<RwLock<Vec<Scope>>>,
+    scopes: Arc<RwLock<Vec<Scope>>>,
 }
 
 impl Buffer {
     pub fn new() -> Self {
         Self {
             records: Arc::new(RwLock::new(Vec::new())),
-            scopes:  Arc::new(RwLock::new(Vec::new())),
+            scopes: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
     pub fn with_capacity(records: usize, scopes: usize) -> Self {
         Self {
             records: Arc::new(RwLock::new(Vec::with_capacity(records))),
-            scopes:  Arc::new(RwLock::new(Vec::with_capacity(scopes))),
+            scopes: Arc::new(RwLock::new(Vec::with_capacity(scopes))),
         }
     }
 
@@ -81,9 +81,15 @@ impl Buffer {
     pub fn set_scope_exit_messages(&self, id: ScopeId, msgs: ExitMessages) -> bool {
         let mut scopes = self.scopes.write();
         if let Some(scope) = scopes.iter_mut().find(|s| s.id == id) {
-            if msgs.success.is_some()  { scope.exit_messages.success  = msgs.success;  }
-            if msgs.failure.is_some()  { scope.exit_messages.failure  = msgs.failure;  }
-            if msgs.aborted.is_some()  { scope.exit_messages.aborted  = msgs.aborted;  }
+            if msgs.success.is_some() {
+                scope.exit_messages.success = msgs.success;
+            }
+            if msgs.failure.is_some() {
+                scope.exit_messages.failure = msgs.failure;
+            }
+            if msgs.aborted.is_some() {
+                scope.exit_messages.aborted = msgs.aborted;
+            }
             true
         } else {
             false

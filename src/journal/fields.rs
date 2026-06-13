@@ -1,4 +1,5 @@
 use super::super::core::value::Value;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::HashMap;
 
 /// Key-value metadata attached to a log record.
@@ -52,7 +53,33 @@ impl Fields {
 
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.data.as_ref().map_or(true, |m| m.is_empty())
+        self.data.as_ref().is_none_or(|m| m.is_empty())
+    }
+}
+
+impl Serialize for Fields {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match &self.data {
+            Some(data) => data.serialize(serializer),
+            None => HashMap::<String, Value>::new().serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Fields {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let data = HashMap::<String, Value>::deserialize(deserializer)?;
+        Ok(if data.is_empty() {
+            Self { data: None }
+        } else {
+            Self { data: Some(data) }
+        })
     }
 }
 

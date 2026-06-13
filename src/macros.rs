@@ -1,14 +1,34 @@
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __eventline_fields {
+    ($($key:ident = $value:expr),* $(,)?) => {{
+        let mut fields = $crate::journal::Fields::new();
+        $(
+            fields.insert(stringify!($key), $value);
+        )*
+        fields
+    }};
+}
+
 /// Log at INFO level.
 ///
-/// The level check is performed *before* `format!()` so that when INFO is
-/// filtered out the entire call compiles down to a single atomic load and a
-/// branch.  No `String` is ever allocated for suppressed messages.
+/// Sink filtering does not prevent recording. Use `set_record_level` to raise
+/// the journal's recording threshold if you need to avoid formatting work.
 #[macro_export]
 macro_rules! info {
+    ($message:expr, $($key:ident = $value:expr),+ $(,)?) => {{
+        let kind = $crate::core::EventKind::Info;
+        if $crate::runtime::log_level::recording_enabled(kind) {
+            let fields = $crate::__eventline_fields!($($key = $value),+);
+            $crate::runtime::emit(kind, $message.to_string(), fields);
+        }
+    }};
+
     ($($arg:tt)*) => {{
-        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Info) {
+        let kind = $crate::core::EventKind::Info;
+        if $crate::runtime::log_level::recording_enabled(kind) {
             $crate::runtime::emit(
-                $crate::core::EventKind::Info,
+                kind,
                 format!($($arg)*),
                 $crate::journal::Fields::new(),
             );
@@ -18,14 +38,22 @@ macro_rules! info {
 
 /// Log at DEBUG level.
 ///
-/// DEBUG is typically the noisiest level; skipping `format!()` here gives
-/// the largest win when debug output is suppressed (the common case in prod).
+/// DEBUG is recorded by default even when it is hidden from all outputs.
 #[macro_export]
 macro_rules! debug {
+    ($message:expr, $($key:ident = $value:expr),+ $(,)?) => {{
+        let kind = $crate::core::EventKind::Debug;
+        if $crate::runtime::log_level::recording_enabled(kind) {
+            let fields = $crate::__eventline_fields!($($key = $value),+);
+            $crate::runtime::emit(kind, $message.to_string(), fields);
+        }
+    }};
+
     ($($arg:tt)*) => {{
-        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Debug) {
+        let kind = $crate::core::EventKind::Debug;
+        if $crate::runtime::log_level::recording_enabled(kind) {
             $crate::runtime::emit(
-                $crate::core::EventKind::Debug,
+                kind,
                 format!($($arg)*),
                 $crate::journal::Fields::new(),
             );
@@ -36,10 +64,19 @@ macro_rules! debug {
 /// Log at WARN level.
 #[macro_export]
 macro_rules! warn {
+    ($message:expr, $($key:ident = $value:expr),+ $(,)?) => {{
+        let kind = $crate::core::EventKind::Warning;
+        if $crate::runtime::log_level::recording_enabled(kind) {
+            let fields = $crate::__eventline_fields!($($key = $value),+);
+            $crate::runtime::emit(kind, $message.to_string(), fields);
+        }
+    }};
+
     ($($arg:tt)*) => {{
-        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Warning) {
+        let kind = $crate::core::EventKind::Warning;
+        if $crate::runtime::log_level::recording_enabled(kind) {
             $crate::runtime::emit(
-                $crate::core::EventKind::Warning,
+                kind,
                 format!($($arg)*),
                 $crate::journal::Fields::new(),
             );
@@ -50,10 +87,19 @@ macro_rules! warn {
 /// Log at ERROR level.
 #[macro_export]
 macro_rules! error {
+    ($message:expr, $($key:ident = $value:expr),+ $(,)?) => {{
+        let kind = $crate::core::EventKind::Error;
+        if $crate::runtime::log_level::recording_enabled(kind) {
+            let fields = $crate::__eventline_fields!($($key = $value),+);
+            $crate::runtime::emit(kind, $message.to_string(), fields);
+        }
+    }};
+
     ($($arg:tt)*) => {{
-        if $crate::runtime::log_level::level_enabled($crate::core::EventKind::Error) {
+        let kind = $crate::core::EventKind::Error;
+        if $crate::runtime::log_level::recording_enabled(kind) {
             $crate::runtime::emit(
-                $crate::core::EventKind::Error,
+                kind,
                 format!($($arg)*),
                 $crate::journal::Fields::new(),
             );

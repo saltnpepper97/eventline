@@ -9,9 +9,7 @@ use buffer::Buffer;
 
 pub use fields::Fields;
 pub use rotation::LogPolicy;
-pub use writer::{
-    AsyncWriter, FileWriter, MultiWriter, RotatingFileWriter, StdoutWriter, Writer,
-};
+pub use writer::{AsyncWriter, FileWriter, MultiWriter, RotatingFileWriter, StdoutWriter, Writer};
 
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,17 +48,26 @@ impl Journal {
     }
 
     pub fn enter_scope(&mut self, name: impl Into<String>) -> ScopeId {
+        let id = self.enter_scope_with_parent(name, self.current_scope);
+        self.current_scope = Some(id);
+        id
+    }
+
+    pub fn enter_scope_with_parent(
+        &mut self,
+        name: impl Into<String>,
+        parent: Option<ScopeId>,
+    ) -> ScopeId {
         let id = ScopeId(self.next_scope_id.fetch_add(1, Ordering::Relaxed));
         let scope = Scope {
             id,
-            parent: self.current_scope,
+            parent,
             entered_at: utils::current_millis(),
             name: Some(name.into()),
             exited_at: None,
             exit_messages: ExitMessages::default(),
         };
         self.buffer.push_scope(scope);
-        self.current_scope = Some(id);
         id
     }
 
@@ -90,10 +97,21 @@ impl Journal {
         name: impl Into<String>,
         fields: Fields,
     ) -> (RecordId, Record, Option<Scope>) {
+        self.record_no_write_in_scope(kind, name, fields, self.current_scope)
+    }
+
+    #[inline]
+    pub fn record_no_write_in_scope(
+        &mut self,
+        kind: EventKind,
+        name: impl Into<String>,
+        fields: Fields,
+        scope_id: Option<ScopeId>,
+    ) -> (RecordId, Record, Option<Scope>) {
         let id = RecordId(self.next_record_id.fetch_add(1, Ordering::Relaxed));
         let record = Record {
             id,
-            scope: self.current_scope,
+            scope: scope_id,
             time_ns: utils::current_nanos(),
             kind: RecordKind::Event {
                 kind,
@@ -101,7 +119,7 @@ impl Journal {
                 fields,
             },
         };
-        let scope = self.current_scope.and_then(|sid| self.buffer.get_scope_by_id(sid));
+        let scope = scope_id.and_then(|sid| self.buffer.get_scope_by_id(sid));
         self.buffer.push_record(record.clone());
         (id, record, scope)
     }
@@ -121,7 +139,10 @@ impl Journal {
                 id,
                 scope: Some(scope_id),
                 time_ns: utils::current_nanos(),
-                kind: RecordKind::ScopeExit { outcome, duration_ns },
+                kind: RecordKind::ScopeExit {
+                    outcome,
+                    duration_ns,
+                },
             };
             self.buffer.push_record(record.clone());
             if Some(scope_id) == self.current_scope {
@@ -136,21 +157,17 @@ impl Journal {
     pub fn record(&mut self, kind: EventKind, name: impl Into<String>, fields: Fields) -> RecordId {
         let (id, record, scope) = self.record_no_write(kind, name, fields);
         if let Some(writer) = &mut self.writer {
-            if crate::runtime::log_level::enabled_for_record(&record) {
-                let _ = writer.write_record(&record, scope.as_ref());
-            }
+            let _ = writer.write_record(&record, scope.as_ref());
         }
         id
     }
 
     pub fn exit_scope(&mut self, scope_id: ScopeId, outcome: Outcome) -> RecordId {
         let (id, payload) = self.exit_scope_no_write(scope_id, outcome);
-        if let Some((record, scope)) = payload {
-            if let Some(writer) = &mut self.writer {
-                if crate::runtime::log_level::enabled_for_record(&record) {
-                    let _ = writer.write_record(&record, Some(&scope));
-                }
-            }
+        if let Some((record, scope)) = payload
+            && let Some(writer) = &mut self.writer
+        {
+            let _ = writer.write_record(&record, Some(&scope));
         }
         id
     }
@@ -173,6 +190,21 @@ impl Journal {
 
     pub fn records(&self) -> Vec<Record> {
         self.buffer.records_snapshot()
+    }
+
+    pub fn records_jsonl(&self) -> Vec<String> {
+        let records = self.buffer.records_snapshot();
+        let scopes = self.buffer.scopes_snapshot();
+
+        records
+            .iter()
+            .map(|record| {
+                let scope = record
+                    .scope
+                    .and_then(|id| scopes.iter().find(|scope| scope.id == id));
+                crate::render::render_jsonl(record, scope)
+            })
+            .collect()
     }
 
     pub fn scopes(&self) -> Vec<Scope> {

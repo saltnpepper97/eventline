@@ -61,15 +61,49 @@ impl From<i64> for Value {
     }
 }
 
+macro_rules! impl_value_from_signed {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl From<$ty> for Value {
+                fn from(v: $ty) -> Self {
+                    Value::Int(v as i64)
+                }
+            }
+        )*
+    };
+}
+
+impl_value_from_signed!(i8, i16, i32, isize);
+
 impl From<u64> for Value {
     fn from(v: u64) -> Self {
         Value::Uint(v)
     }
 }
 
+macro_rules! impl_value_from_unsigned {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl From<$ty> for Value {
+                fn from(v: $ty) -> Self {
+                    Value::Uint(v as u64)
+                }
+            }
+        )*
+    };
+}
+
+impl_value_from_unsigned!(u8, u16, u32, usize);
+
 impl From<f64> for Value {
     fn from(v: f64) -> Self {
         Value::Float(v)
+    }
+}
+
+impl From<f32> for Value {
+    fn from(v: f32) -> Self {
+        Value::Float(v as f64)
     }
 }
 

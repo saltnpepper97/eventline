@@ -6,12 +6,13 @@
 
 use super::Outcome;
 use super::ScopeId;
+use serde::{Deserialize, Serialize};
 
 /// Optional per-outcome exit messages for the scope.
 ///
 /// These are used ONLY when rendering the `done:` (ScopeExit) line.
 /// They do not generate separate event records.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExitMessages {
     /// Optional suffix appended to `done:` line when outcome is Success.
     pub success: Option<String>,
@@ -22,7 +23,7 @@ pub struct ExitMessages {
 }
 
 /// A journal scope, representing a logical unit of work.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scope {
     /// Unique identifier for this scope.
     pub id: ScopeId,
@@ -43,7 +44,7 @@ impl Scope {
     pub fn elapsed(&self) -> std::time::Duration {
         let end = self
             .exited_at
-            .unwrap_or_else(|| crate::journal::utils::current_millis());
+            .unwrap_or_else(crate::journal::utils::current_millis);
         std::time::Duration::from_millis(end.saturating_sub(self.entered_at))
     }
 
@@ -139,7 +140,9 @@ impl RuntimeScopeGuard {
     }
 
     /// Get the underlying scope id (useful to attach exit messages right after enter).
-    pub fn id(&self) -> ScopeId { self.id }
+    pub fn id(&self) -> ScopeId {
+        self.id
+    }
 
     /// Explicitly exit with a specific outcome. Safe to call multiple times.
     pub fn exit(&mut self, outcome: Outcome) {
@@ -149,11 +152,17 @@ impl RuntimeScopeGuard {
         }
     }
 
-    pub fn success(mut self) { self.exit(Outcome::Success); }
+    pub fn success(mut self) {
+        self.exit(Outcome::Success);
+    }
 
-    pub fn failure(mut self) { self.exit(Outcome::Failure); }
+    pub fn failure(mut self) {
+        self.exit(Outcome::Failure);
+    }
 
-    pub fn aborted(mut self) { self.exit(Outcome::Aborted); }
+    pub fn aborted(mut self) {
+        self.exit(Outcome::Aborted);
+    }
 }
 
 impl Drop for RuntimeScopeGuard {
@@ -169,4 +178,3 @@ impl Drop for RuntimeScopeGuard {
         }
     }
 }
-

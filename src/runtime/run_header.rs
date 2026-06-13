@@ -30,18 +30,18 @@ impl RunHeader {
     /// Create a header that includes the current process ID.
     pub fn new(title: impl Into<String>) -> Self {
         Self {
-            title:    title.into(),
+            title: title.into(),
             show_pid: true,
-            width:    72,
+            width: 72,
         }
     }
 
     /// Create a header without a PID annotation.
     pub fn without_pid(title: impl Into<String>) -> Self {
         Self {
-            title:    title.into(),
+            title: title.into(),
             show_pid: false,
-            width:    72,
+            width: 72,
         }
     }
 
@@ -65,7 +65,7 @@ impl RunHeader {
         } else {
             4
         };
-        let left  = padding / 2;
+        let left = padding / 2;
         let right = padding - left;
 
         format!("{}{}{}", "=".repeat(left), inner, "=".repeat(right))
