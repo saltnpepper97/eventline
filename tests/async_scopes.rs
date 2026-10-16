@@ -103,6 +103,7 @@ fn scope_context_migrates_between_threads_and_restores_both_workers() {
         assert!(poll_once(future.as_mut()).is_pending());
         eventline::info!("worker-a outside");
         assert_eq!(event_scope("worker-a outside"), Some(worker.id()));
+        assert!(eventline::scope_elapsed(scope("migrating").id).is_some());
         future
     })
     .join()
@@ -124,6 +125,19 @@ fn scope_context_migrates_between_threads_and_restores_both_workers() {
     assert_eq!(event_scope("migrating-before"), Some(nested.id));
     assert_eq!(event_scope("migrating-after"), Some(nested.id));
     assert_eq!(outcomes(nested.id), [Outcome::Success]);
+    let summaries = eventline::replay::scope_outcomes(&eventline::records(), &eventline::scopes());
+    for id in [nested.id, scope("migrating").id] {
+        let summary = summaries
+            .iter()
+            .find(|summary| summary.scope.id == id)
+            .unwrap();
+        assert_eq!(
+            eventline::scope_elapsed(id),
+            Some(std::time::Duration::from_nanos(summary.duration_ns))
+        );
+    }
+    eventline::runtime::clear();
+    assert_eq!(eventline::scope_elapsed(nested.id), None);
 }
 
 #[test]

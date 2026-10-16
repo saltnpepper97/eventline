@@ -29,11 +29,11 @@ pub struct Scope {
     pub id: ScopeId,
     /// Optional parent scope, allowing nested scopes.
     pub parent: Option<ScopeId>,
-    /// Timestamp when the scope was entered.
+    /// Wall-clock milliseconds since the Unix epoch when the scope was entered.
     pub entered_at: u64,
     /// Optional human-readable name for the scope.
     pub name: Option<String>,
-    /// Timestamp when the scope was exited
+    /// Wall-clock milliseconds since the Unix epoch when the scope was exited.
     pub exited_at: Option<u64>,
 
     /// Optional per-outcome "done line" messages.
@@ -41,6 +41,12 @@ pub struct Scope {
 }
 
 impl Scope {
+    /// Wall-clock estimate derived from this portable metadata snapshot.
+    ///
+    /// For accurate monotonic timing, use [`crate::Journal::scope_elapsed`] or
+    /// [`crate::scope_elapsed`] while the scope is retained, or the persisted
+    /// [`crate::core::RecordKind::ScopeExit::duration_ns`] for completed work.
+    /// This estimate retains millisecond precision and can reflect clock changes.
     pub fn elapsed(&self) -> std::time::Duration {
         let end = self
             .exited_at

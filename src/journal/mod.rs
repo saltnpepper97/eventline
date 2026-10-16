@@ -18,6 +18,7 @@ pub use writer::{
 
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 pub struct Journal {
     pub(crate) buffer: Buffer,
@@ -63,6 +64,7 @@ impl Journal {
         name: impl Into<String>,
         parent: Option<ScopeId>,
     ) -> ScopeId {
+        let started_at = Instant::now();
         let id = ScopeId(self.next_scope_id.fetch_add(1, Ordering::Relaxed));
         let scope = Scope {
             id,
@@ -72,11 +74,12 @@ impl Journal {
             exited_at: None,
             exit_messages: ExitMessages::default(),
         };
-        self.buffer.push_scope(scope);
+        self.buffer.push_scope_at(scope, started_at);
         id
     }
 
     pub fn enter_scope_unnamed(&mut self, parent: Option<ScopeId>) -> ScopeId {
+        let started_at = Instant::now();
         let id = ScopeId(self.next_scope_id.fetch_add(1, Ordering::Relaxed));
         let scope = Scope {
             id,
@@ -86,7 +89,7 @@ impl Journal {
             exited_at: None,
             exit_messages: ExitMessages::default(),
         };
-        self.buffer.push_scope(scope);
+        self.buffer.push_scope_at(scope, started_at);
         self.current_scope = Some(id);
         id
     }
@@ -135,11 +138,15 @@ impl Journal {
         scope_id: ScopeId,
         outcome: Outcome,
     ) -> (RecordId, Option<(Record, Scope)>) {
+        let finished_at = Instant::now();
         let id = RecordId(self.next_record_id.fetch_add(1, Ordering::Relaxed));
         let exited_at = utils::current_millis();
 
-        if let Some(scope) = self.buffer.finalize_scope_exit(scope_id, exited_at) {
-            let duration_ns = scope.elapsed().as_nanos() as u64;
+        if let Some((scope, elapsed)) =
+            self.buffer
+                .finalize_scope_exit_at(scope_id, exited_at, finished_at)
+        {
+            let duration_ns = utils::duration_nanos(elapsed);
             let record = Record {
                 id,
                 scope: Some(scope_id),
@@ -187,6 +194,22 @@ impl Journal {
 
     pub fn get_scope(&self, id: ScopeId) -> Option<Scope> {
         self.buffer.get_scope_by_id(id)
+    }
+
+    /// Monotonic elapsed time for an open scope, or its frozen duration on exit.
+    /// Returns `None` if the scope was cleared or trimmed from this journal.
+    /// This is independent of the scope's wall-clock timestamps.
+    ///
+    /// ```
+    /// let mut journal = eventline::Journal::new();
+    /// let id = journal.enter_scope("request");
+    /// assert!(journal.scope_elapsed(id).is_some());
+    /// journal.exit_scope(id, eventline::core::Outcome::Success);
+    /// let finished = journal.scope_elapsed(id).unwrap();
+    /// assert_eq!(journal.scope_elapsed(id), Some(finished));
+    /// ```
+    pub fn scope_elapsed(&self, id: ScopeId) -> Option<Duration> {
+        self.buffer.get_scope_elapsed(id)
     }
 
     pub fn get_record(&self, id: RecordId) -> Option<Record> {

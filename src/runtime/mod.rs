@@ -410,6 +410,12 @@ pub fn scopes() -> Vec<crate::core::Scope> {
     rt().journal.lock().scopes()
 }
 
+/// Monotonic elapsed time for a retained runtime scope, frozen after it exits.
+/// Returns `None` after the scope is cleared or trimmed from the journal.
+pub fn scope_elapsed(id: crate::core::ScopeId) -> Option<std::time::Duration> {
+    rt().journal.lock().scope_elapsed(id)
+}
+
 pub fn records_jsonl() -> Vec<String> {
     rt().journal.lock().records_jsonl()
 }

@@ -14,6 +14,7 @@ eventline records structured execution history (events + scopes) first. Console 
 
 - Append-only journal of structured records (events + scope exits)
 - RAII scopes with duration tracking and success/failure/aborted outcomes
+- Monotonic scope durations with nanosecond units, independent of wall-clock adjustments
 - Result-aware scopes that record `Ok` as success and `Err` as failure
 - Per-outcome exit messages for clean `done:` lines
 - Emission gating (sink log levels) that does NOT affect recording
@@ -227,6 +228,40 @@ span suspension points. Existing guards keep their usual drop outcomes.
 
 ---
 
+## Scope Timing
+
+Live scope durations use `std::time::Instant`. Exit records store the measured
+duration in `duration_ns` without rounding it to milliseconds. Precision
+depends on the platform's monotonic clock. Once a scope exits, its duration is
+frozen, including when async work moves between threads.
+
+Human-readable and exported timestamps still use `SystemTime`: record
+`time_ns` is nanoseconds since the Unix epoch, while scope `entered_at` and
+`exited_at` remain milliseconds since the Unix epoch. Clock adjustments can
+change these timestamps without changing the measured duration. The existing
+serialized scope and record formats are preserved.
+
+Query accurate elapsed time for retained runtime scopes:
+
+```rust
+let guard = eventline::scope_guard("request");
+let id = guard.id();
+let running = eventline::scope_elapsed(id).unwrap();
+guard.success();
+let finished = eventline::scope_elapsed(id).unwrap();
+```
+
+For a direct journal, use `journal.scope_elapsed(id)`. Both queries return
+`None` after the scope is cleared or trimmed. Internal clocks are removed with
+their scopes; they are never serialized.
+
+`Scope::elapsed()` remains a millisecond wall-clock estimate for standalone
+metadata, preserving existing struct literals and serialized data. Use the
+monotonic query for live work and the exit record's `duration_ns` for completed
+history, JSONL export, and replay.
+
+---
+
 ## Recording vs Emission (important)
 
 - **Recording** happens independently from output sinks — by default all built-in levels are recorded.
@@ -435,6 +470,7 @@ inserted automatically before the header so run boundaries are clearly visible.
 
 - Records are append-only and never rewritten
 - Scopes are created on enter and finalized exactly once on exit
+- Scope durations use a monotonic clock; wall-clock timestamps are retained for display
 - The journal is the canonical execution history
 - Rendering and runtime only affect presentation, not data
 - Synchronous runtime scope context is thread-local; explicit async wrappers carry their own context
