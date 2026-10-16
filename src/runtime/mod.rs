@@ -1,8 +1,10 @@
 pub mod log_level;
 pub mod run_header;
+mod scope_context;
 
 pub use log_level::{LogLevel, get_log_level, get_record_level, set_log_level, set_record_level};
 pub use run_header::RunHeader;
+pub use scope_context::{ScopeContext, WithScopeContext, scope_async};
 
 use crate::journal::{
     AsyncWriter, FileWriter, Journal, LogPolicy, MultiWriter, RotatingFileWriter, StdoutWriter,
@@ -322,10 +324,18 @@ pub fn emit(kind: crate::core::EventKind, message: String, fields: crate::journa
 // Scope API
 // ---------------------------------------------------------------------------
 
+/// Enter a synchronous scope, exiting it when the guard is dropped.
+///
+/// To hold this guard across `.await`, run the future inside [`scope_async`] or
+/// [`ScopeContext::wrap`]. Wrap concurrently polled sibling futures separately.
 pub fn scope_guard(name: impl Into<String>) -> crate::core::RuntimeScopeGuard {
     crate::core::RuntimeScopeGuard::enter(name)
 }
 
+/// Enter a scope in the current thread or installed future context.
+///
+/// Async operations that keep scopes open across `.await` must be wrapped with
+/// [`scope_async`] or [`ScopeContext::wrap`].
 pub fn enter_scope(name: impl Into<String>) -> crate::core::ScopeId {
     let parent = current_scope();
     let id = rt().journal.lock().enter_scope_with_parent(name, parent);
@@ -344,8 +354,8 @@ pub fn exit_scope(id: crate::core::ScopeId, outcome: crate::core::Outcome) {
         payload
     };
 
+    remove_scope_from_stack(id);
     if let Some((record, scope)) = payload {
-        remove_scope_from_stack(id);
         let _ = rt().writer.lock().write_record(&record, Some(&scope));
     }
 }

@@ -120,13 +120,17 @@ impl<'a> Drop for ScopeGuard<'a> {
 }
 
 // -----------------------------------------------------------------------------
-// Runtime-level RAII guard (async-friendly)
+// Runtime-level RAII guard
 // -----------------------------------------------------------------------------
 
 /// RAII guard for a scope managed by the global runtime.
 ///
 /// - Enters a scope via `runtime::enter_scope`.
 /// - Exits that scope on drop (default = Success).
+///
+/// When holding a guard across `.await`, wrap the async operation in
+/// [`crate::scope_async`] or [`crate::ScopeContext::wrap`]. Wrap each concurrently
+/// polled sibling operation separately so their active scopes stay isolated.
 pub struct RuntimeScopeGuard {
     id: ScopeId,
     exited: bool,

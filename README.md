@@ -21,6 +21,7 @@ eventline records structured execution history (events + scopes) first. Console 
 - Console and file sinks (toggleable, configurable formatting)
 - Automatic log rotation with configurable size limits and backup retention
 - Thread-local runtime scope stacks so concurrent threads do not share active scope state
+- Executor-independent async scope contexts that follow futures across polls and threads
 - Dropped async-writer record counters and observable writer setup errors
 - Replay helpers for scope trees, failed scopes, slowest scopes, and filtered records
 - Optional `log` and `tracing` bridges behind feature flags
@@ -96,6 +97,62 @@ Default text output uses a calm, aligned lowercase style:
     done:  request#12 served [success] (18.4ms)
 
 *(Exact formatting depends on runtime settings.)*
+
+---
+
+## Async Scopes
+
+Use `scope_async` for operations that hold scopes open across `.await`:
+
+```rust
+let answer = eventline::scope_async("request", async {
+    eventline::info!("processing request");
+    eventline::scope_async("lookup", async {
+        // Async work can suspend here without leaking its active scope.
+        42
+    }).await
+}).await;
+```
+
+The parent context is captured when `scope_async` is called. The named scope
+starts on the first poll. Each wrapped future carries an independent scope
+stack, installed only while that future is polled or dropped. This supports
+interleaved tasks on one thread and tasks moving between worker threads, with
+no executor dependency or feature flag.
+
+Completion records `Success`, cancellation after starting records `Aborted`,
+and unwinding records `Failure`. An unpolled future creates no scope.
+Completion does not inspect the future's output: returning `Err` still counts
+as completion. Use a `scope_guard` inside a context wrapper when you need to
+choose an outcome explicitly.
+
+For existing guards or scopes, propagate context with `ScopeContext::capture()`.
+For example, with Tokio, create the wrapper before spawning:
+
+```rust
+eventline::scope_async("request", async {
+    let context = eventline::ScopeContext::capture();
+    let worker = tokio::spawn(context.wrap(async {
+        let guard = eventline::scope_guard("worker");
+        tokio::task::yield_now().await;
+        eventline::info!("working under request");
+        guard.success();
+    }));
+    worker.await.unwrap();
+}).await;
+```
+
+Cloning a context gives each wrapped future its own stack. Use
+`ScopeContext::new().wrap(future)` for work with no inherited scope. Capturing a
+context does not keep its scopes open; await child work before exiting its
+parents. Executors do not automatically propagate context to spawned tasks.
+
+Wrap each concurrently polled operation separately, including siblings in
+`join!` and `select!`. Wrapping only their common outer future cannot isolate
+unwrapped siblings. Existing `scope!`, `scope_guard`, and `enter_scope` calls
+can cross `.await` inside an isolated wrapper. Outside a wrapper, these APIs
+retain their lightweight synchronous, thread-local behavior and should not
+span suspension points. Existing guards keep their usual drop outcomes.
 
 ---
 
@@ -264,7 +321,7 @@ inserted automatically before the header so run boundaries are clearly visible.
 - Scopes are created on enter and finalized exactly once on exit
 - The journal is the canonical execution history
 - Rendering and runtime only affect presentation, not data
-- Runtime scope context is thread-local
+- Synchronous runtime scope context is thread-local; explicit async wrappers carry their own context
 - In-memory retention is bounded and configurable
 - Writer queues are bounded; dropped output records are counted
 - Rotation and headers operate on raw bytes and bypass the record pipeline intentionally
