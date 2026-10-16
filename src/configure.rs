@@ -47,7 +47,9 @@ pub struct Setup {
     /// Use [`FileSetup::Off`] to explicitly disable file output.
     pub file: Option<FileSetup>,
 
-    /// Optional maximum number of records/scopes kept in the in-memory runtime journal.
+    /// Optional retention cap for runtime records and closed scopes.
+    /// Open scopes remain available for later exits and updates. Periodic
+    /// trimming allows record counts to briefly exceed the cap between passes.
     ///
     /// Durable history should use a file sink; this controls only the bounded
     /// in-process replay buffer returned by `eventline::records()` and
