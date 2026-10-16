@@ -14,6 +14,7 @@ eventline records structured execution history (events + scopes) first. Console 
 
 - Append-only journal of structured records (events + scope exits)
 - RAII scopes with duration tracking and success/failure/aborted outcomes
+- Result-aware scopes that record `Ok` as success and `Err` as failure
 - Per-outcome exit messages for clean `done:` lines
 - Emission gating (sink log levels) that does NOT affect recording
 - Structured fields on events
@@ -100,6 +101,75 @@ Default text output uses a calm, aligned lowercase style:
 
 ---
 
+## Result-Aware Scopes
+
+Use `scope_result!` when the block returns a `Result`. Both a returned `Err`
+and an early `?` record `Failure`; `Ok` records `Success`:
+
+```rust
+fn load_config() -> Result<String, std::io::Error> {
+    eventline::scope_result!("config", success = "loaded", failure = "failed", {
+        let config = std::fs::read_to_string("config.toml")?;
+        Ok(config)
+    })
+}
+```
+
+The macro returns the original result. Its block runs in a closure: `?` and
+`return` leave that closure. If the surrounding function should return early
+too, use the macro as its final expression (as above) or apply `?` to the macro
+call. `break` and `continue` cannot target a surrounding loop.
+
+The closure API is also available:
+
+```rust
+let result = eventline::scope_result("config", || {
+    std::fs::read_to_string("config.toml")
+});
+```
+
+For async work, use `scope_async_result`:
+
+```rust
+let result = eventline::scope_async_result("request", async {
+    // Async operations and `?` can go here.
+    Ok::<_, std::io::Error>(42)
+}).await;
+```
+
+This uses the same context isolation as `scope_async`. `Ok` records `Success`,
+`Err` records `Failure`, dropping a pending future after it starts records
+`Aborted`, and unwinding records `Failure`. An unpolled future creates no scope.
+Wrap each spawned or concurrently polled operation separately.
+
+Existing guards support `exit_result(&result)`, which borrows the result
+without consuming it. To report application-specific cancellation explicitly,
+use `guard.aborted()` or `guard.exit(eventline::core::Outcome::Aborted)`:
+
+```rust
+let mut guard = eventline::scope_guard("config");
+if cancellation_requested {
+    guard.aborted();
+    return Err(Error::Cancelled);
+}
+let result = read_config();
+guard.exit_result(&result);
+result
+```
+
+When this guard spans `.await`, run it inside `ScopeContext::wrap` as described
+below. An explicitly selected outcome is never overwritten by `exit_result`
+or by dropping the guard. Returning a cancellation error through an automatic
+result scope still counts as `Err` and records `Failure`; use explicit abortion
+when that distinction matters. Neither successful values nor errors need to
+implement `Clone`, `Debug`, `Display`, or `std::error::Error`.
+
+Ordinary `scope!`, `scope_guard`, and `scope_async` retain their existing drop
+and completion behavior. They do not inspect return values; use the result-aware
+APIs when a `Result` should determine the outcome.
+
+---
+
 ## Async Scopes
 
 Use `scope_async` for operations that hold scopes open across `.await`:
@@ -123,8 +193,8 @@ no executor dependency or feature flag.
 Completion records `Success`, cancellation after starting records `Aborted`,
 and unwinding records `Failure`. An unpolled future creates no scope.
 Completion does not inspect the future's output: returning `Err` still counts
-as completion. Use a `scope_guard` inside a context wrapper when you need to
-choose an outcome explicitly.
+as completion. Use `scope_async_result` to derive the outcome from a `Result`,
+or a `scope_guard` inside a context wrapper to choose an outcome explicitly.
 
 For existing guards or scopes, propagate context with `ScopeContext::capture()`.
 For example, with Tokio, create the wrapper before spawning:
@@ -336,7 +406,7 @@ inserted automatically before the header so run boundaries are clearly visible.
 - `runtime/` — global config, sinks, filtering policy, run headers
 - `replay`   — replay helpers for scope trees and summaries
 - `integrations` — optional `log` and `tracing` bridges
-- `macros`   — `info!`, `debug!`, `warn!`, `error!`, `scope!`
+- `macros`   — `info!`, `debug!`, `warn!`, `error!`, `scope!`, `scope_result!`
 
 ---
 

@@ -103,6 +103,16 @@ impl<'a> ScopeGuard<'a> {
             self.exited = true;
         }
     }
+
+    /// Exit with Success for `Ok` or Failure for `Err`, without consuming it.
+    /// An explicitly chosen outcome (including Aborted) is never overwritten.
+    pub fn exit_result<T, E>(&mut self, result: &Result<T, E>) {
+        self.exit(if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        });
+    }
 }
 
 impl<'a> Drop for ScopeGuard<'a> {
@@ -127,6 +137,10 @@ impl<'a> Drop for ScopeGuard<'a> {
 ///
 /// - Enters a scope via `runtime::enter_scope`.
 /// - Exits that scope on drop (default = Success).
+///
+/// Normal drop cannot detect a returned `Err`. Use [`crate::scope_result!`],
+/// [`crate::runtime::scope_result`], or [`Self::exit_result`] to derive the
+/// outcome from a `Result`. Use [`Self::aborted`] for explicit cancellation.
 ///
 /// When holding a guard across `.await`, wrap the async operation in
 /// [`crate::scope_async`] or [`crate::ScopeContext::wrap`]. Wrap each concurrently
@@ -154,6 +168,26 @@ impl RuntimeScopeGuard {
             crate::runtime::exit_scope(self.id, outcome);
             self.exited = true;
         }
+    }
+
+    /// Exit with Success for `Ok` or Failure for `Err`, without consuming it.
+    ///
+    /// Safe to call repeatedly. An explicitly chosen outcome (including
+    /// Aborted) is never overwritten.
+    ///
+    /// ```
+    /// let mut guard = eventline::scope_guard("config");
+    /// let result = Err::<(), _>("invalid config");
+    /// guard.exit_result(&result);
+    /// // `result` is still available to return or inspect.
+    /// assert!(result.is_err());
+    /// ```
+    pub fn exit_result<T, E>(&mut self, result: &Result<T, E>) {
+        self.exit(if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        });
     }
 
     pub fn success(mut self) {

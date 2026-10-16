@@ -47,8 +47,9 @@ pub use runtime::{
     enable_console_output, enable_console_scope_exits, enable_console_scope_labels,
     enable_console_timestamp, enable_file_output, enable_file_output_jsonl,
     enable_file_output_rotating, enter_scope, exit_scope, flush, init, init_sync,
-    last_writer_error, records, records_jsonl, scope_async, scope_guard, scopes, set_console_level,
-    set_file_format, set_file_level, set_journal_retention, set_scope_exit_messages,
+    last_writer_error, records, records_jsonl, scope_async, scope_async_result, scope_guard,
+    scope_result, scopes, set_console_level, set_file_format, set_file_level,
+    set_journal_retention, set_scope_exit_messages,
 };
 
 pub use render::FileFormat;

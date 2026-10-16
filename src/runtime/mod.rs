@@ -4,7 +4,7 @@ mod scope_context;
 
 pub use log_level::{LogLevel, get_log_level, get_record_level, set_log_level, set_record_level};
 pub use run_header::RunHeader;
-pub use scope_context::{ScopeContext, WithScopeContext, scope_async};
+pub use scope_context::{ScopeContext, WithScopeContext, scope_async, scope_async_result};
 
 use crate::journal::{
     AsyncWriter, FileWriter, Journal, LogPolicy, MultiWriter, RotatingFileWriter, StdoutWriter,
@@ -330,6 +330,36 @@ pub fn emit(kind: crate::core::EventKind, message: String, fields: crate::journa
 /// [`ScopeContext::wrap`]. Wrap concurrently polled sibling futures separately.
 pub fn scope_guard(name: impl Into<String>) -> crate::core::RuntimeScopeGuard {
     crate::core::RuntimeScopeGuard::enter(name)
+}
+
+/// Run synchronous work in a scope whose outcome follows its returned `Result`.
+///
+/// `Ok` records Success, `Err` records Failure, and unwinding records Failure.
+/// The original result is returned without cloning or formatting its contents.
+/// Early `return` and `?` inside the closure return from that closure; propagate
+/// the returned result at the call site to exit the surrounding function.
+///
+/// For async work, use [`scope_async_result`]. To choose Aborted explicitly,
+/// use [`scope_guard`] with [`crate::RuntimeScopeGuard::aborted`] or
+/// [`crate::RuntimeScopeGuard::exit_result`].
+///
+/// ```
+/// fn load_config() -> Result<(), &'static str> {
+///     eventline::scope_result("config", || {
+///         Err("invalid config")?;
+///         Ok(())
+///     })
+/// }
+/// assert_eq!(load_config(), Err("invalid config"));
+/// ```
+pub fn scope_result<T, E>(
+    name: impl Into<String>,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let mut guard = scope_guard(name);
+    let result = operation();
+    guard.exit_result(&result);
+    result
 }
 
 /// Enter a scope in the current thread or installed future context.
