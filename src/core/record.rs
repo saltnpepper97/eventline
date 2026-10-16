@@ -12,6 +12,8 @@ pub enum RecordKind {
     },
     ScopeExit {
         outcome: Outcome,
+        /// Duration measured with the monotonic clock, in nanoseconds.
+        /// Saturates at `u64::MAX` if the measured duration exceeds that range.
         duration_ns: u64,
     },
 }
