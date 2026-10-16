@@ -235,6 +235,8 @@ impl Journal {
         self.buffer.get_scope_elapsed(id)
     }
 
+    /// Look up a retained record by ID. The first query builds an O(n) index;
+    /// subsequent lookups are expected O(1), with the index kept up to date.
     pub fn get_record(&self, id: RecordId) -> Option<Record> {
         self.buffer.get_record_by_id(id)
     }
@@ -246,15 +248,14 @@ impl Journal {
     pub fn records_jsonl(&self) -> Vec<String> {
         let records = self.buffer.records_snapshot();
         let scopes = self.buffer.scopes_snapshot();
+        let scopes_by_id = crate::replay::index_scopes(&scopes);
 
         let mut lines: Vec<_> = scopes
             .iter()
             .map(|scope| crate::render::render_scope_jsonl(scope, &self.run_id))
             .collect();
         lines.extend(records.iter().map(|record| {
-            let scope = record
-                .scope
-                .and_then(|id| scopes.iter().find(|scope| scope.id == id));
+            let scope = record.scope.and_then(|id| scopes_by_id.get(&id).copied());
             crate::render::render_jsonl_in_run(record, scope, &self.run_id)
         }));
         lines

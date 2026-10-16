@@ -459,6 +459,43 @@ Inspect saved files from the command line with the example:
 cargo run --example replay_file -- app.jsonl.2 app.jsonl.1 app.jsonl
 ```
 
+For repeated queries over one snapshot or saved run, build a borrowed index:
+
+```rust
+let records = eventline::records();
+let scopes = eventline::scopes();
+let index = eventline::replay::ReplayIndex::new(&records, &scopes);
+for scope in &scopes {
+    let count = index.records_for_scope(scope.id).count();
+    println!("{:?}: {count} records", scope.id);
+}
+```
+
+`ReplayIndex` also provides `scope(id)`, `record(id)`, and `scope_outcomes()`.
+It borrows immutable input, preserves record order and conflicting observations,
+and avoids cloning records for scope queries. Index each independent saved run
+separately because IDs are local to a run. The existing one-off helpers remain
+available; tree and outcome reconstruction now index scopes internally.
+
+---
+
+## Performance
+
+The journal uses indexed scope lookups and deque storage for record eviction.
+Record-ID indexes are built on the first ID query, keeping their allocation and
+update cost out of recording-only workloads. Open scopes remain retained when
+old closed scopes are evicted. Snapshots keep their original insertion order.
+
+Run benchmarks for event recording, concurrent runtime logging, scope nesting,
+retention churn, ID lookups, and replay queries:
+
+```sh
+cargo bench --locked --bench journal
+```
+
+See [performance measurements and methodology](docs/performance.md) for the
+before/after results, workload sizes, and indexing tradeoffs.
+
 ---
 
 ## Ecosystem Bridges
