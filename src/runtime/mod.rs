@@ -8,13 +8,12 @@ pub use scope_context::{ScopeContext, WithScopeContext, scope_async, scope_async
 
 use crate::journal::{
     AsyncWriter, FileWriter, Journal, LogPolicy, MultiWriter, RotatingFileWriter, StdoutWriter,
-    rotation,
+    WriteMode, WriterDiagnostics, WriterState,
 };
 use crate::render::{ConsoleStyle, FileFormat, FileStyle};
 use parking_lot::{Mutex, RwLock};
 use std::cell::RefCell;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -56,6 +55,7 @@ struct Config {
     file_policy_keep_backups: Option<u32>,
 
     max_journal_records: usize,
+    writer_mode: WriteMode,
 }
 
 impl Default for Config {
@@ -78,6 +78,7 @@ impl Default for Config {
             file_policy_keep_backups: None,
 
             max_journal_records: DEFAULT_MAX_JOURNAL_RECORDS,
+            writer_mode: WriteMode::BestEffort,
         }
     }
 }
@@ -112,8 +113,7 @@ impl Config {
 pub struct Runtime {
     journal: Mutex<Journal>,
     writer: Mutex<Box<dyn crate::journal::Writer + Send>>,
-    writer_dropped: Arc<AtomicUsize>,
-    last_writer_error: Mutex<Option<String>>,
+    writer_state: Arc<WriterState>,
     config: RwLock<Config>,
     last_cfg: Mutex<Option<Config>>,
     emit_count: AtomicUsize,
@@ -122,23 +122,13 @@ pub struct Runtime {
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 
 fn rt() -> &'static Runtime {
-    RUNTIME.get_or_init(|| {
-        let writer_dropped = Arc::new(AtomicUsize::new(0));
-        Runtime {
-            journal: Mutex::new(Journal::new()),
-            writer: Mutex::new(Box::new(
-                crate::journal::AsyncWriter::spawn_with_dropped_counter(
-                    Box::new(NoopWriter),
-                    WRITER_QUEUE_CAP,
-                    writer_dropped.clone(),
-                ),
-            )),
-            writer_dropped,
-            last_writer_error: Mutex::new(None),
-            config: RwLock::new(Config::default()),
-            last_cfg: Mutex::new(None),
-            emit_count: AtomicUsize::new(0),
-        }
+    RUNTIME.get_or_init(|| Runtime {
+        journal: Mutex::new(Journal::new()),
+        writer: Mutex::new(Box::new(NoopWriter)),
+        writer_state: Arc::new(WriterState::default()),
+        config: RwLock::new(Config::default()),
+        last_cfg: Mutex::new(None),
+        emit_count: AtomicUsize::new(0),
     })
 }
 
@@ -154,147 +144,144 @@ pub async fn init() {
 /// Initialise the runtime. Idempotent; safe to call multiple times.
 pub fn init_sync() {
     let _ = rt();
-    rebuild_writers();
+    let _ = update_writers(|_| {}, None, false);
 }
 
 pub fn enable_console_output(enable: bool) {
-    rt().config.write().console_enabled = enable;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.console_enabled = enable, None, false);
 }
 
 pub fn set_console_level(level: LogLevel) {
-    rt().config.write().console_level = level;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.console_level = level, None, false);
 }
 
 pub fn enable_console_color(enable: bool) {
-    rt().config.write().console_color = enable;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.console_color = enable, None, false);
 }
 
 pub fn enable_console_scope_labels(enable: bool) {
-    rt().config.write().console_show_scope = enable;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.console_show_scope = enable, None, false);
 }
 
 pub fn enable_console_scope_exits(enable: bool) {
-    rt().config.write().console_show_scope_exit = enable;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.console_show_scope_exit = enable, None, false);
 }
 
 pub fn enable_console_duration(enable: bool) {
-    rt().config.write().console_duration = enable;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.console_duration = enable, None, false);
 }
 
 pub fn enable_console_timestamp(enable: bool) {
-    rt().config.write().console_timestamp = enable;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.console_timestamp = enable, None, false);
 }
 
+/// Enable plain file output, preserving the configured file level.
+/// Opening errors are returned and retained in [`writer_diagnostics`]. The
+/// previous output configuration remains active if setup fails.
 pub fn enable_file_output(path: impl AsRef<Path>) -> io::Result<()> {
-    let mut cfg = rt().config.write();
-    cfg.file_enabled = true;
-    cfg.file_path = Some(path.as_ref().to_path_buf());
-    cfg.file_level = LogLevel::Debug;
-    cfg.file_format = FileFormat::Text;
-    cfg.file_policy_max_bytes = None;
-    cfg.file_policy_keep_backups = None;
-    drop(cfg);
-    rebuild_writers();
-    Ok(())
+    update_writers(
+        |cfg| {
+            cfg.file_enabled = true;
+            cfg.file_path = Some(path.as_ref().to_path_buf());
+            cfg.file_format = FileFormat::Text;
+            cfg.file_policy_max_bytes = None;
+            cfg.file_policy_keep_backups = None;
+        },
+        None,
+        true,
+    )
 }
 
 pub fn set_file_level(level: LogLevel) {
-    rt().config.write().file_level = level;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.file_level = level, None, false);
 }
 
 pub fn set_file_format(format: FileFormat) {
-    rt().config.write().file_format = format;
-    rebuild_writers();
+    let _ = update_writers(|cfg| cfg.file_format = format, None, false);
 }
 
 pub fn set_journal_retention(max_records: usize) {
-    rt().config.write().max_journal_records = max_records.max(1);
+    let mut last = rt().last_cfg.lock();
+    let max_records = max_records.max(1);
+    rt().config.write().max_journal_records = max_records;
+    if let Some(cfg) = last.as_mut() {
+        cfg.max_journal_records = max_records;
+    }
 }
 
+/// Change queue-pressure behavior without adding fields to [`crate::Setup`].
+/// Blocking mode waits for queue capacity on the calling thread. It prevents
+/// queue-pressure drops, but does not retry failed I/O or guarantee fsync.
+/// Use [`flush`] to wait for output and observe background write failures.
+///
+/// ```
+/// eventline::set_writer_mode(eventline::WriteMode::Blocking)?;
+/// # Ok::<(), std::io::Error>(())
+/// ```
+pub fn set_writer_mode(mode: WriteMode) -> io::Result<()> {
+    update_writers(|cfg| cfg.writer_mode = mode, None, false)
+}
+
+/// Enable JSONL output. Setup failures leave the previous sinks active.
 pub fn enable_file_output_jsonl(path: impl AsRef<Path>) -> io::Result<()> {
-    let mut cfg = rt().config.write();
-    cfg.file_enabled = true;
-    cfg.file_path = Some(path.as_ref().to_path_buf());
-    cfg.file_level = LogLevel::Debug;
-    cfg.file_format = FileFormat::Jsonl;
-    cfg.file_policy_max_bytes = None;
-    cfg.file_policy_keep_backups = None;
-    drop(cfg);
-    rebuild_writers();
-    Ok(())
+    update_writers(
+        |cfg| {
+            cfg.file_enabled = true;
+            cfg.file_path = Some(path.as_ref().to_path_buf());
+            cfg.file_format = FileFormat::Jsonl;
+            cfg.file_policy_max_bytes = None;
+            cfg.file_policy_keep_backups = None;
+        },
+        None,
+        true,
+    )
 }
 
+/// Enable rotating output, returning open, rotation, or header-write errors.
+/// Queued output is drained before rotation or header insertion. The configured
+/// level and format are preserved; failed setup keeps the previous sinks active.
 pub fn enable_file_output_rotating(
     path: impl AsRef<Path>,
     policy: LogPolicy,
     header: Option<RunHeader>,
 ) -> io::Result<()> {
-    let path = path.as_ref();
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let needs_separator = match fs::metadata(path) {
-        Ok(m) if m.len() >= policy.max_bytes => {
-            rotation::rotate(path, policy.keep_backups)?;
-            false
-        }
-        Ok(m) if m.len() > 0 => true,
-        _ => false,
-    };
-
-    if let Some(hdr) = header {
-        let mut f = OpenOptions::new().create(true).append(true).open(path)?;
-        if needs_separator {
-            f.write_all(b"\n")?;
-        }
-        f.write_all(hdr.render().as_bytes())?;
-        f.write_all(b"\n")?;
-        f.flush()?;
-    }
-
-    {
-        let mut cfg = rt().config.write();
-        cfg.file_enabled = true;
-        cfg.file_level = LogLevel::Debug;
-        cfg.file_path = Some(path.to_path_buf());
-        cfg.file_policy_max_bytes = Some(policy.max_bytes);
-        cfg.file_policy_keep_backups = Some(policy.keep_backups);
-    }
-    rebuild_writers();
-    Ok(())
+    update_writers(
+        |cfg| {
+            cfg.file_enabled = true;
+            cfg.file_path = Some(path.as_ref().to_path_buf());
+            cfg.file_policy_max_bytes = Some(policy.max_bytes);
+            cfg.file_policy_keep_backups = Some(policy.keep_backups);
+        },
+        header,
+        true,
+    )
 }
 
 pub fn disable_file_output() {
-    {
-        let mut cfg = rt().config.write();
-        cfg.file_enabled = false;
-        cfg.file_path = None;
-        cfg.file_policy_max_bytes = None;
-        cfg.file_policy_keep_backups = None;
-    }
-    rebuild_writers();
+    let _ = update_writers(
+        |cfg| {
+            cfg.file_enabled = false;
+            cfg.file_path = None;
+            cfg.file_policy_max_bytes = None;
+            cfg.file_policy_keep_backups = None;
+        },
+        None,
+        false,
+    );
 }
 
 pub fn disable_all_output() {
-    {
-        let mut cfg = rt().config.write();
-        cfg.console_enabled = false;
-        cfg.file_enabled = false;
-        cfg.file_path = None;
-        cfg.file_policy_max_bytes = None;
-        cfg.file_policy_keep_backups = None;
-    }
-    rebuild_writers();
+    let _ = update_writers(
+        |cfg| {
+            cfg.console_enabled = false;
+            cfg.file_enabled = false;
+            cfg.file_path = None;
+            cfg.file_policy_max_bytes = None;
+            cfg.file_policy_keep_backups = None;
+        },
+        None,
+        false,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +396,8 @@ fn remove_scope_from_stack(id: crate::core::ScopeId) {
 // Misc public API
 // ---------------------------------------------------------------------------
 
+/// Wait for queued output. Returns the first write failure since the previous
+/// flush, or a flush/worker error. Success does not imply fsync or erase diagnostics.
 pub fn flush() -> io::Result<()> {
     rt().writer.lock().flush()
 }
@@ -426,18 +415,26 @@ pub fn records_jsonl() -> Vec<String> {
 }
 
 pub fn dropped_writer_records() -> usize {
-    rt().writer_dropped.load(Ordering::Relaxed)
+    rt().writer_state.dropped_count()
 }
 
+/// Most recently observed setup, write, flush, or worker failure.
+/// Retained across successful operations until [`clear`].
 pub fn last_writer_error() -> Option<String> {
-    rt().last_writer_error.lock().clone()
+    rt().writer_state.snapshot().last_error
+}
+
+/// Snapshot cumulative writer health. No extra diagnostic log files are written.
+pub fn writer_diagnostics() -> WriterDiagnostics {
+    rt().writer_state.snapshot()
 }
 
 pub fn clear() {
+    let mut writer = rt().writer.lock();
+    let _ = writer.flush();
     rt().journal.lock().clear();
     rt().emit_count.store(0, Ordering::Relaxed);
-    rt().writer_dropped.store(0, Ordering::Relaxed);
-    *rt().last_writer_error.lock() = None;
+    rt().writer_state.clear();
     SCOPE_STACK.with(|stack| stack.borrow_mut().clear());
 }
 
@@ -496,78 +493,151 @@ where
 // Internal — writer construction
 // ---------------------------------------------------------------------------
 
-fn rebuild_writers() {
-    let cfg = rt().config.read().clone();
+pub(crate) fn apply_setup(s: crate::Setup) -> io::Result<()> {
+    use crate::FileSetup;
+    let shared_level = s.level.unwrap_or(if s.verbose {
+        LogLevel::Debug
+    } else {
+        LogLevel::Info
+    });
+    let mut file = s.file;
+    let header = match &mut file {
+        Some(FileSetup::Rotating { header, .. }) => header.take(),
+        _ => None,
+    };
+    let force = matches!(
+        file,
+        Some(FileSetup::Plain { .. } | FileSetup::Jsonl { .. } | FileSetup::Rotating { .. })
+    );
+    let file_format = if matches!(&file, Some(FileSetup::Jsonl { .. })) {
+        FileFormat::Jsonl
+    } else {
+        FileFormat::Text
+    };
+    update_writers(
+        move |cfg| {
+            cfg.console_enabled = s.verbose;
+            cfg.console_level = s.console_level.unwrap_or(shared_level);
+            cfg.file_level = s.file_level.unwrap_or(shared_level);
+            if let Some(max_records) = s.journal_retention {
+                cfg.max_journal_records = max_records.max(1);
+            }
+            match file {
+                None => {}
+                Some(FileSetup::Off) => {
+                    cfg.file_enabled = false;
+                    cfg.file_path = None;
+                    cfg.file_policy_max_bytes = None;
+                    cfg.file_policy_keep_backups = None;
+                }
+                Some(FileSetup::Plain { path } | FileSetup::Jsonl { path }) => {
+                    cfg.file_enabled = true;
+                    cfg.file_path = Some(path);
+                    cfg.file_format = file_format;
+                    cfg.file_policy_max_bytes = None;
+                    cfg.file_policy_keep_backups = None;
+                }
+                Some(FileSetup::Rotating { path, policy, .. }) => {
+                    cfg.file_enabled = true;
+                    cfg.file_path = Some(path);
+                    cfg.file_policy_max_bytes = Some(policy.max_bytes);
+                    cfg.file_policy_keep_backups = Some(policy.keep_backups);
+                }
+            }
+        },
+        header,
+        force,
+    )
+}
 
-    {
-        let mut last = rt().last_cfg.lock();
-        if last.as_ref() == Some(&cfg) {
-            return;
-        }
-        *last = Some(cfg.clone());
+fn update_writers(
+    change: impl FnOnce(&mut Config),
+    header: Option<RunHeader>,
+    force: bool,
+) -> io::Result<()> {
+    // Serialize config updates through installation. Failed candidates are not
+    // cached or committed, so repeating the same request can recover.
+    let mut last = rt().last_cfg.lock();
+    let mut cfg = rt().config.read().clone();
+    change(&mut cfg);
+    if !force && last.as_ref() == Some(&cfg) {
+        return Ok(());
     }
 
-    set_log_level(cfg.effective_level());
-
-    let mut last_error = None;
-    let inner: Box<dyn crate::journal::Writer + Send> = {
-        let mut mw = MultiWriter::new();
-
-        if cfg.console_enabled {
-            let stdout = StdoutWriter::with_style(ConsoleStyle {
-                color: cfg.console_color,
-                show_scope: cfg.console_show_scope,
-                show_scope_exit: cfg.console_show_scope_exit,
-                show_duration: cfg.console_duration,
-                show_timestamp: cfg.console_timestamp,
-            });
-            mw.add(FilteredWriter::new(stdout, cfg.console_level));
-        }
-
-        if cfg.file_enabled
-            && let Some(path) = &cfg.file_path
-        {
-            let file_style = FileStyle {
-                show_timestamp: true,
-                show_scope: true,
-                format: cfg.file_format,
+    let mut writer = rt().writer.lock();
+    // Drain before opening or rotating files. A past failure must not prevent
+    // switching to a healthy sink; the worker already retained its diagnostics.
+    let _ = writer.flush();
+    let replacement = build_writers(&cfg, header.as_ref()).and_then(|inner| {
+        AsyncWriter::try_spawn_with_state(
+            inner,
+            WRITER_QUEUE_CAP,
+            cfg.writer_mode,
+            rt().writer_state.clone(),
+        )
+    });
+    let replacement = match replacement {
+        Ok(writer) => writer,
+        Err(error) => {
+            let operation = match (&cfg.file_path, cfg.file_enabled) {
+                (Some(path), true) => {
+                    format!("configuring output for log file '{}'", path.display())
+                }
+                _ => "configuring output".to_string(),
             };
-
-            match cfg.file_policy() {
-                Some(policy) => match RotatingFileWriter::with_style(path, file_style, policy) {
-                    Ok(rfw) => mw.add(FilteredWriter::new(rfw, cfg.file_level)),
-                    Err(e) => {
-                        last_error = Some(format!(
-                            "failed to open rotating log file '{}': {e}",
-                            path.display()
-                        ))
-                    }
-                },
-                None => match FileWriter::with_style(path, file_style) {
-                    Ok(fw) => mw.add(FilteredWriter::new(fw, cfg.file_level)),
-                    Err(e) => {
-                        last_error =
-                            Some(format!("failed to open log file '{}': {e}", path.display()))
-                    }
-                },
-            }
-        }
-
-        if mw.is_empty() {
-            Box::new(NoopWriter)
-        } else {
-            Box::new(mw)
+            rt().writer_state.record_error(&operation, &error);
+            return Err(error);
         }
     };
+    *writer = Box::new(replacement);
+    set_log_level(cfg.effective_level());
+    *rt().config.write() = cfg.clone();
+    *last = Some(cfg);
+    Ok(())
+}
 
-    *rt().last_writer_error.lock() = last_error;
-
-    let async_writer = AsyncWriter::spawn_with_dropped_counter(
-        inner,
-        WRITER_QUEUE_CAP,
-        rt().writer_dropped.clone(),
-    );
-    *rt().writer.lock() = Box::new(async_writer);
+fn build_writers(
+    cfg: &Config,
+    header: Option<&RunHeader>,
+) -> io::Result<Box<dyn crate::journal::Writer + Send>> {
+    let mut mw = MultiWriter::new();
+    if cfg.console_enabled {
+        let stdout = StdoutWriter::with_style(ConsoleStyle {
+            color: cfg.console_color,
+            show_scope: cfg.console_show_scope,
+            show_scope_exit: cfg.console_show_scope_exit,
+            show_duration: cfg.console_duration,
+            show_timestamp: cfg.console_timestamp,
+        });
+        mw.add(FilteredWriter::new(stdout, cfg.console_level));
+    }
+    if cfg.file_enabled
+        && let Some(path) = &cfg.file_path
+    {
+        let file_style = FileStyle {
+            show_timestamp: true,
+            show_scope: true,
+            format: cfg.file_format,
+        };
+        match cfg.file_policy() {
+            Some(policy) => {
+                let mut file = RotatingFileWriter::with_style(path, file_style, policy)?;
+                if let Some(header) = header {
+                    file.write_header(header.render().as_bytes())?;
+                }
+                mw.add(FilteredWriter::new(file, cfg.file_level));
+            }
+            None => mw.add(FilteredWriter::new(
+                FileWriter::with_style(path, file_style)?,
+                cfg.file_level,
+            )),
+        }
+    }
+    if mw.is_empty() {
+        Ok(Box::new(NoopWriter))
+    } else {
+        Ok(Box::new(mw))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +664,7 @@ impl crate::journal::Writer for NoopWriter {
 mod tests {
     use super::{Config, LogLevel};
     use crate::core::{EventKind, RecordKind};
+    static TEST_RUNTIME: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
     #[test]
     fn effective_level_uses_most_verbose_enabled_sink() {
@@ -622,6 +693,7 @@ mod tests {
 
     #[test]
     fn filtered_output_still_records() {
+        let _lock = TEST_RUNTIME.lock();
         super::clear();
         super::disable_all_output();
         super::set_record_level(LogLevel::Debug);
@@ -641,6 +713,7 @@ mod tests {
 
     #[test]
     fn nested_runtime_scopes_restore_parent_scope() {
+        let _lock = TEST_RUNTIME.lock();
         super::clear();
         super::disable_all_output();
         super::set_record_level(LogLevel::Debug);
@@ -668,6 +741,7 @@ mod tests {
 
     #[test]
     fn runtime_scopes_are_thread_local() {
+        let _lock = TEST_RUNTIME.lock();
         super::clear();
         super::disable_all_output();
         super::set_record_level(LogLevel::Debug);

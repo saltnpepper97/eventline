@@ -97,12 +97,8 @@ pub enum FileSetup {
 
 /// Initialize and configure the eventline runtime.
 ///
-/// This function:
-///
-/// 1. Ensures the runtime is initialized (idempotent).
-/// 2. Configures console output based on `verbose`.
-/// 3. Applies console and file sink levels.
-/// 4. Applies file logging configuration if provided.
+/// Resolves console/file levels and installs the requested sinks together.
+/// A failed setup leaves the previous runtime configuration active.
 ///
 /// The shared fallback level is determined as follows:
 ///
@@ -121,37 +117,5 @@ pub enum FileSetup {
 ///
 /// Returns an [`io::Error`] if file logging initialization fails.
 pub async fn setup(s: Setup) -> io::Result<()> {
-    // Initialize runtime (safe to call multiple times).
-    runtime::init_sync();
-
-    // Console output is controlled directly by the verbose flag.
-    runtime::enable_console_output(s.verbose);
-
-    // Determine shared fallback level.
-    let shared_level = match s.level {
-        Some(l) => l,
-        None if s.verbose => LogLevel::Debug,
-        None => LogLevel::Info,
-    };
-    runtime::set_console_level(s.console_level.unwrap_or(shared_level));
-    runtime::set_file_level(s.file_level.unwrap_or(shared_level));
-
-    if let Some(max_records) = s.journal_retention {
-        runtime::set_journal_retention(max_records);
-    }
-
-    // Apply file configuration if specified.
-    match s.file {
-        None => {}
-        Some(FileSetup::Off) => runtime::disable_file_output(),
-        Some(FileSetup::Plain { path }) => runtime::enable_file_output(path)?,
-        Some(FileSetup::Jsonl { path }) => runtime::enable_file_output_jsonl(path)?,
-        Some(FileSetup::Rotating {
-            path,
-            policy,
-            header,
-        }) => runtime::enable_file_output_rotating(path, policy, header)?,
-    }
-
-    Ok(())
+    runtime::apply_setup(s)
 }

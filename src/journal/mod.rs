@@ -1,4 +1,5 @@
 pub mod buffer;
+mod diagnostics;
 pub mod fields;
 pub mod rotation;
 pub mod utils;
@@ -7,9 +8,13 @@ pub mod writer;
 use crate::core::*;
 use buffer::Buffer;
 
+pub use diagnostics::WriterDiagnostics;
+pub(crate) use diagnostics::WriterState;
 pub use fields::Fields;
 pub use rotation::LogPolicy;
-pub use writer::{AsyncWriter, FileWriter, MultiWriter, RotatingFileWriter, StdoutWriter, Writer};
+pub use writer::{
+    AsyncWriter, FileWriter, MultiWriter, RotatingFileWriter, StdoutWriter, WriteMode, Writer,
+};
 
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
