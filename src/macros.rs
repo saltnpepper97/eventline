@@ -116,6 +116,10 @@ macro_rules! error {
 /// - `scope!("config", success="loaded", failure="failed", aborted="aborted", { ... })`
 ///
 /// Exit messages only appear on the scope exit ("done:") line.
+///
+/// If the block contains `.await`, run it inside [`crate::scope_async`] or
+/// [`crate::ScopeContext::wrap`]. Concurrently polled siblings each need their
+/// own context wrapper.
 #[macro_export]
 macro_rules! scope {
     // -------------------------------------------------------------------------
