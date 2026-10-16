@@ -38,29 +38,33 @@ impl LogPolicy {
 /// Rotates existing backups and moves the active log file to `.1`.
 ///
 /// If `keep_backups` is 0 the active log is simply deleted.
-/// Failures on individual rename steps are silently ignored to avoid
-/// interfering with the running process over a housekeeping detail.
+/// Missing files are harmless. Other removal or rename failures are returned
+/// to the caller so rotation cannot silently append to the wrong file.
 pub fn rotate(path: &Path, keep_backups: u32) -> io::Result<()> {
     if keep_backups == 0 {
-        let _ = fs::remove_file(path);
-        return Ok(());
+        return ignore_missing(fs::remove_file(path));
     }
 
     // Shift existing backups up by one slot, dropping the oldest.
     for i in (1..keep_backups).rev() {
         let from = rotated_name(path, i);
         let to = rotated_name(path, i + 1);
-        if from.exists() {
-            let _ = fs::rename(&from, &to);
-        }
+        ignore_missing(fs::rename(&from, &to))?;
     }
 
     let first = rotated_name(path, 1);
-    let _ = fs::rename(path, first);
-
-    Ok(())
+    ignore_missing(fs::rename(path, first))
 }
 
 pub fn rotated_name(base: &Path, n: u32) -> PathBuf {
-    PathBuf::from(format!("{}.{}", base.display(), n))
+    let mut name = base.as_os_str().to_os_string();
+    name.push(format!(".{n}"));
+    PathBuf::from(name)
+}
+
+fn ignore_missing(result: io::Result<()>) -> io::Result<()> {
+    match result {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }

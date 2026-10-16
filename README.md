@@ -24,6 +24,7 @@ eventline records structured execution history (events + scopes) first. Console 
 - Thread-local runtime scope stacks so concurrent threads do not share active scope state
 - Executor-independent async scope contexts that follow futures across polls and threads
 - Dropped async-writer record counters and observable writer setup errors
+- Persistent writer-failure diagnostics, error-reporting flush barriers, and optional queue backpressure
 - Replay helpers for scope trees, failed scopes, slowest scopes, and filtered records
 - Optional `log` and `tracing` bridges behind feature flags
 - Run headers written as raw bytes at the start of each log session
@@ -301,6 +302,48 @@ Inspect writer health:
 
     let dropped = eventline::dropped_writer_records();
     let last_error = eventline::last_writer_error();
+    let health = eventline::writer_diagnostics();
+    // health.dropped_records, health.failed_operations, health.last_error
+
+File initialization returns open, rotation, and run-header write errors. A
+failed replacement keeps the previously active sinks and configuration. File
+enablement preserves the configured file level, including `Setup::file_level`
+and its shared fallback. A failed setup request can be retried with the same
+path after fixing the underlying problem.
+
+Background write and flush failures increment `failed_operations` and update
+`last_error`. These diagnostics live in memory, retain only the latest error
+text plus cumulative counters, and survive successful writes and writer
+reconfiguration. `eventline::runtime::clear()` drains pending output, then
+resets the journal and these diagnostics. No diagnostic log files are created.
+The failure count covers failed operations, not lost records or individual
+sinks; one operation may fail on more than one sink.
+
+Call `eventline::flush()?` at an appropriate boundary to wait for queued output.
+It returns the first background write error since the previous flush even if
+the underlying file flush succeeds, or a flush/worker error. Reporting an error
+does not retry the record, and a later successful flush does not erase the
+diagnostics. Runtime reconfiguration also drains output before opening,
+rotating, or writing a header to the replacement file. Multiple sinks are all
+attempted even when one fails.
+
+The default queue policy remains nonblocking and counts records dropped under
+pressure. To wait for capacity instead, opt into blocking backpressure:
+
+```rust
+eventline::set_writer_mode(eventline::WriteMode::Blocking)?;
+// This policy is also preserved when calling eventline::setup(...).
+eventline::enable_file_output("app.log")?;
+eventline::info!("queued without a queue-pressure drop");
+eventline::flush()?;
+```
+
+Blocking mode waits on the calling thread, so use it where blocking is
+acceptable. It prevents queue-pressure drops but cannot prevent disk errors,
+retry partial writes safely, or guarantee persistence after a power loss.
+`flush` does not call `fsync`. Use `WriteMode::BestEffort` to restore the default.
+Standalone `AsyncWriter` users can select a policy with
+`try_spawn_with_mode` and inspect the writer's `diagnostics()` snapshot.
 
 ---
 
@@ -319,6 +362,9 @@ Inspect writer health:
 Rotation is triggered automatically before a record is written that would push
 the file past `max_bytes`. Set `keep_backups` to `0` to simply delete the log
 on rotation rather than keeping any history.
+Set `max_bytes` to `0` to disable rotation. Missing backup files are harmless;
+other rotation errors are returned during setup or reported through the
+background diagnostics and `flush`.
 
 ---
 
@@ -393,7 +439,7 @@ inserted automatically before the header so run boundaries are clearly visible.
 - Rendering and runtime only affect presentation, not data
 - Synchronous runtime scope context is thread-local; explicit async wrappers carry their own context
 - In-memory retention is bounded and configurable
-- Writer queues are bounded; dropped output records are counted
+- Writer queues are bounded; pressure drops and I/O failures are counted separately
 - Rotation and headers operate on raw bytes and bypass the record pipeline intentionally
 
 ---
