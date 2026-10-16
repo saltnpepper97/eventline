@@ -13,12 +13,12 @@ rust-version = "1.89"
 
 [dependencies]
 parking_lot = "0.12.5"
-log = { version = "0.4.28", optional = true }
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.145"
-time = { version = "0.3.47", features = ["formatting", "local-offset"] }
+log = { version = "0.4.34", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+time = { version = "0.3.55", features = ["formatting", "local-offset"] }
 tracing = { version = "0.1.44", optional = true }
-tracing-subscriber = { version = "0.3.22", optional = true }
+tracing-subscriber = { version = "0.3.23", optional = true }
 
 [features]
 default = []

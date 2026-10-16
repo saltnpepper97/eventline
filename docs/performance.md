@@ -93,6 +93,8 @@ indexing changes, with the same compatible benchmark workloads copied into its
 checkout. Only the new `ReplayIndex` cases are absent from that baseline. Both
 use the locked dependencies, default features, Cargo's optimized bench profile,
 Rust 1.97.1, and an AMD Ryzen 9 5900X Linux workstation on 2026-10-15.
+Both measurements used the baseline lockfile, before the subsequent dependency
+refresh. Rerun the harness to measure the refreshed dependency set.
 
 Representative medians (lower is better):
 
