@@ -25,6 +25,9 @@ pub mod replay;
 pub mod runtime;
 
 mod configure;
+mod format;
+
+pub use format::JSONL_FORMAT_VERSION;
 
 // -----------------------------------------------------------------------------
 // Core exports

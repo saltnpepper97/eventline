@@ -20,6 +20,7 @@ eventline records structured execution history (events + scopes) first. Console 
 - Emission gating (sink log levels) that does NOT affect recording
 - Structured fields on events
 - JSONL rendering/export for machine-readable journals
+- Saved-file replay with run identities, format versioning, and crash-log recovery
 - Console and file sinks (toggleable, configurable formatting)
 - Automatic log rotation with configurable size limits and backup retention
 - Thread-local runtime scope stacks so concurrent threads do not share active scope state
@@ -311,6 +312,10 @@ Export the current in-memory journal as JSONL lines:
 
     let lines = eventline::records_jsonl();
 
+Exports include retained scope metadata as well as records. JSONL sinks write
+scope metadata when scopes begin, even if those scopes emit no events. Text
+output keeps its existing behavior.
+
 File output with automatic rotation:
 
     use eventline::{LogPolicy, RunHeader};
@@ -414,7 +419,45 @@ The journal can be inspected directly:
     let failed = eventline::replay::failed_scopes(&records, &scopes);
     let slowest = eventline::replay::slowest_scopes(&records, &scopes, 10);
 
-This is the main difference between eventline and ordinary logging: log output is only one way to view the execution history.
+Load an earlier run after restarting the application:
+
+```rust
+let saved = eventline::replay::load_jsonl("app.jsonl")?;
+for run in &saved.runs {
+    println!("{}", eventline::replay::render_scope_tree(&run.scopes));
+    let failed = eventline::replay::failed_scopes(&run.records, &run.scopes);
+    let unfinished = run.unfinished_scopes();
+    println!("{} failed, {} unfinished", failed.len(), unfinished.len());
+}
+for issue in &saved.issues {
+    eprintln!("{issue:?}");
+}
+```
+
+`load_jsonl_files(paths)` combines rotated files in the supplied order, normally
+oldest first. `read_jsonl(reader)` accepts any buffered reader. Loading does not
+change the live journal or runtime configuration. The returned records/scopes
+work with the existing replay helpers.
+
+The loader preserves valid entries around damaged or truncated lines and
+reports recovery issues with source paths and line numbers. Missing exits stay
+unfinished; no success or abortion is invented after a crash. Missing ancestors
+are marked as placeholders. Only surviving exit records establish outcomes.
+Inspect `saved.issues` whenever interpreting incomplete history.
+
+New JSONL uses format version `1` and a run identity on every structured entry,
+so restarted applications can reuse IDs without mixing histories. The runtime
+keeps the same identity when sinks are rebuilt. Existing unversioned files are
+accepted as legacy version `0`; their unmarked restart boundaries can be
+ambiguous. Unsupported future versions are explicitly reported and skipped.
+See the [JSONL format and recovery reference](docs/jsonl-format.md) for schemas,
+compatibility rules, and recovery limits.
+
+Inspect saved files from the command line with the example:
+
+```sh
+cargo run --example replay_file -- app.jsonl.2 app.jsonl.1 app.jsonl
+```
 
 ---
 
@@ -486,7 +529,7 @@ inserted automatically before the header so run boundaries are clearly visible.
 - `journal/` — append-only buffer, writers, rotation logic, structured fields
 - `render/`  — canonical formatting for console and file output
 - `runtime/` — global config, sinks, filtering policy, run headers
-- `replay`   — replay helpers for scope trees and summaries
+- `replay`   — saved JSONL loading/recovery, scope trees, and summaries
 - `integrations` — optional `log` and `tracing` bridges
 - `macros`   — `info!`, `debug!`, `warn!`, `error!`, `scope!`, `scope_result!`
 

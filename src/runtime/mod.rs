@@ -357,6 +357,15 @@ pub fn enter_scope(name: impl Into<String>) -> crate::core::ScopeId {
     let parent = current_scope();
     let id = rt().journal.lock().enter_scope_with_parent(name, parent);
     SCOPE_STACK.with(|stack| stack.borrow_mut().push(id));
+    let mut writer = rt().writer.lock();
+    if writer.wants_scope_metadata() {
+        let scope = rt()
+            .journal
+            .lock()
+            .get_scope(id)
+            .expect("new scope is retained");
+        let _ = writer.write_scope(&scope);
+    }
     id
 }
 
@@ -478,6 +487,17 @@ impl<W> crate::journal::Writer for FilteredWriter<W>
 where
     W: crate::journal::Writer,
 {
+    fn wants_scope_metadata(&self) -> bool {
+        self.inner.wants_scope_metadata()
+    }
+    fn set_run_id(&mut self, run_id: &str) {
+        self.inner.set_run_id(run_id);
+    }
+
+    fn write_scope(&mut self, scope: &crate::core::Scope) -> io::Result<()> {
+        self.inner.write_scope(scope)
+    }
+
     fn write_record(
         &mut self,
         record: &crate::core::Record,
@@ -642,6 +662,12 @@ fn build_writers(
     if mw.is_empty() {
         Ok(Box::new(NoopWriter))
     } else {
+        crate::journal::Writer::set_run_id(&mut mw, rt().journal.lock().run_id());
+        if cfg.file_enabled && cfg.file_format == FileFormat::Jsonl {
+            for scope in rt().journal.lock().scopes() {
+                crate::journal::Writer::write_scope(&mut mw, &scope)?;
+            }
+        }
         Ok(Box::new(mw))
     }
 }

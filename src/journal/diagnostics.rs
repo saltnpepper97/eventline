@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// write, flush, or reconfiguration does not erase an earlier failure.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WriterDiagnostics {
-    /// Records discarded because the queue was full or unavailable.
+    /// Output entries (records or scope metadata) discarded because the queue
+    /// was full or unavailable.
     pub dropped_records: usize,
     /// Failed setup, write, flush, or worker/queue operations.
     /// This counts operations, not the number of lost records or failed sinks.

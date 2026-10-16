@@ -1,5 +1,10 @@
 use crate::core::{EventKind, Outcome, Record, RecordKind, Scope, ScopeId};
 
+mod load;
+pub use load::{
+    ReplayIssue, ReplayIssueKind, SavedJournal, SavedRun, load_jsonl, load_jsonl_files, read_jsonl,
+};
+
 #[derive(Debug, Clone)]
 pub struct ScopeNode {
     pub scope: Scope,

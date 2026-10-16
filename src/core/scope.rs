@@ -37,6 +37,7 @@ pub struct Scope {
     pub exited_at: Option<u64>,
 
     /// Optional per-outcome "done line" messages.
+    #[serde(default)]
     pub exit_messages: ExitMessages,
 }
 

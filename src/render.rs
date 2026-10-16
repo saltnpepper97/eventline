@@ -1,4 +1,4 @@
-use crate::core::{EventKind, Outcome, Record, RecordKind, Scope, Value};
+use crate::core::{EventKind, ExitMessages, Outcome, Record, RecordKind, Scope, Value};
 use crate::journal::Fields;
 use serde::Serialize;
 use time::{OffsetDateTime, UtcOffset};
@@ -148,7 +148,47 @@ pub fn render_file(record: &Record, scope: Option<&Scope>, style: FileStyle) -> 
 }
 
 pub fn render_jsonl(record: &Record, scope: Option<&Scope>) -> String {
-    match serde_json::to_string(&JsonRecord::new(record, scope)) {
+    render_jsonl_in_run(record, scope, crate::format::default_run_id())
+}
+
+/// Render a versioned record belonging to an explicit run. Use a distinct ID
+/// for each independent journal so reused record/scope IDs cannot collide.
+pub fn render_jsonl_in_run(record: &Record, scope: Option<&Scope>, run_id: &str) -> String {
+    encode_jsonl(&JsonRecord::new(record, scope, run_id))
+}
+
+pub(crate) fn render_scope_jsonl(scope: &Scope, run_id: &str) -> String {
+    #[derive(Serialize)]
+    struct ScopeEntry<'a> {
+        format_version: u32,
+        run_id: &'a str,
+        #[serde(rename = "type")]
+        kind: &'static str,
+        scope: JsonScope<'a>,
+    }
+    encode_jsonl(&ScopeEntry {
+        format_version: crate::JSONL_FORMAT_VERSION,
+        run_id,
+        kind: "scope",
+        scope: JsonScope::from(scope),
+    })
+}
+
+pub(crate) fn render_file_in_run(
+    record: &Record,
+    scope: Option<&Scope>,
+    style: FileStyle,
+    run_id: &str,
+) -> String {
+    if style.format == FileFormat::Jsonl {
+        render_jsonl_in_run(record, scope, run_id)
+    } else {
+        render_file(record, scope, style)
+    }
+}
+
+fn encode_jsonl(value: &impl Serialize) -> String {
+    match serde_json::to_string(value) {
         Ok(line) => line,
         Err(e) => format!(
             r#"{{"type":"render_error","error":"{}"}}"#,
@@ -200,6 +240,8 @@ fn escape_json_error(e: &serde_json::Error) -> String {
 
 #[derive(Serialize)]
 struct JsonRecord<'a> {
+    format_version: u32,
+    run_id: &'a str,
     id: u64,
     time_ns: u64,
     scope_id: Option<u64>,
@@ -216,7 +258,7 @@ enum JsonRecordKind<'a> {
     Event {
         level: &'static str,
         message: &'a str,
-        fields: &'a Fields,
+        fields: crate::format::JsonFields<'a>,
     },
     #[serde(rename = "scope_exit")]
     ScopeExit {
@@ -232,15 +274,16 @@ struct JsonScope<'a> {
     entered_at: u64,
     exited_at: Option<u64>,
     name: Option<&'a str>,
+    exit_messages: &'a ExitMessages,
 }
 
 impl<'a> JsonRecord<'a> {
-    fn new(record: &'a Record, scope: Option<&'a Scope>) -> Self {
+    fn new(record: &'a Record, scope: Option<&'a Scope>, run_id: &'a str) -> Self {
         let kind = match &record.kind {
             RecordKind::Event { kind, name, fields } => JsonRecordKind::Event {
                 level: level_str_lower(*kind),
                 message: name,
-                fields,
+                fields: crate::format::JsonFields(fields),
             },
             RecordKind::ScopeExit {
                 outcome,
@@ -252,6 +295,8 @@ impl<'a> JsonRecord<'a> {
         };
 
         Self {
+            format_version: crate::JSONL_FORMAT_VERSION,
+            run_id,
             id: record.id.0,
             time_ns: record.time_ns,
             scope_id: record.scope.map(|id| id.0),
@@ -269,6 +314,7 @@ impl<'a> From<&'a Scope> for JsonScope<'a> {
             entered_at: scope.entered_at,
             exited_at: scope.exited_at,
             name: scope.name.as_deref(),
+            exit_messages: &scope.exit_messages,
         }
     }
 }
