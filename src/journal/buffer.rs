@@ -355,8 +355,12 @@ mod tests {
                 assert_eq!(journal.scope_elapsed(id), Some(elapsed));
                 assert_eq!(journal.get_scope(id).unwrap().entered_at, wall_entry);
                 assert!(journal.get_scope(id).unwrap().exited_at.is_some());
-                let exported: serde_json::Value =
-                    serde_json::from_str(&journal.records_jsonl()[0]).unwrap();
+                let exported = journal
+                    .records_jsonl()
+                    .iter()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .find(|line| line["type"] == "scope_exit")
+                    .unwrap();
                 assert_eq!(exported["type"], "scope_exit");
                 assert_eq!(exported["duration_ns"], duration_ns);
                 assert_eq!(exported["time_ns"], record.time_ns);

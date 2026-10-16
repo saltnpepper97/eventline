@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 pub struct Journal {
+    run_id: String,
     pub(crate) buffer: Buffer,
     writer: Option<Box<dyn Writer>>,
     next_scope_id: AtomicU64,
@@ -31,6 +32,7 @@ pub struct Journal {
 impl Journal {
     pub fn new() -> Self {
         Self {
+            run_id: crate::format::new_run_id(),
             buffer: Buffer::new(),
             writer: None,
             next_scope_id: AtomicU64::new(0),
@@ -40,17 +42,24 @@ impl Journal {
     }
 
     pub fn with_writer(writer: impl Writer + 'static) -> Self {
-        Self {
-            buffer: Buffer::new(),
-            writer: Some(Box::new(writer)),
-            next_scope_id: AtomicU64::new(0),
-            next_record_id: AtomicU64::new(0),
-            current_scope: None,
-        }
+        let mut journal = Self::new();
+        journal.set_writer(writer);
+        journal
     }
 
-    pub fn set_writer(&mut self, writer: impl Writer + 'static) {
+    pub fn set_writer(&mut self, mut writer: impl Writer + 'static) {
+        writer.set_run_id(&self.run_id);
+        if writer.wants_scope_metadata() {
+            for scope in self.buffer.scopes_snapshot() {
+                let _ = writer.write_scope(&scope);
+            }
+        }
         self.writer = Some(Box::new(writer));
+    }
+
+    /// Identity used by JSONL exports and writers for this journal's lifetime.
+    pub fn run_id(&self) -> &str {
+        &self.run_id
     }
 
     pub fn enter_scope(&mut self, name: impl Into<String>) -> ScopeId {
@@ -75,6 +84,7 @@ impl Journal {
             exit_messages: ExitMessages::default(),
         };
         self.buffer.push_scope_at(scope, started_at);
+        self.write_scope_metadata(id);
         id
     }
 
@@ -90,8 +100,21 @@ impl Journal {
             exit_messages: ExitMessages::default(),
         };
         self.buffer.push_scope_at(scope, started_at);
+        self.write_scope_metadata(id);
         self.current_scope = Some(id);
         id
+    }
+
+    fn write_scope_metadata(&mut self, id: ScopeId) {
+        if let Some(writer) = &mut self.writer
+            && writer.wants_scope_metadata()
+        {
+            let scope = self
+                .buffer
+                .get_scope_by_id(id)
+                .expect("new scope is retained");
+            let _ = writer.write_scope(&scope);
+        }
     }
 
     pub fn set_scope_exit_messages(&mut self, id: ScopeId, msgs: ExitMessages) -> bool {
@@ -224,15 +247,17 @@ impl Journal {
         let records = self.buffer.records_snapshot();
         let scopes = self.buffer.scopes_snapshot();
 
-        records
+        let mut lines: Vec<_> = scopes
             .iter()
-            .map(|record| {
-                let scope = record
-                    .scope
-                    .and_then(|id| scopes.iter().find(|scope| scope.id == id));
-                crate::render::render_jsonl(record, scope)
-            })
-            .collect()
+            .map(|scope| crate::render::render_scope_jsonl(scope, &self.run_id))
+            .collect();
+        lines.extend(records.iter().map(|record| {
+            let scope = record
+                .scope
+                .and_then(|id| scopes.iter().find(|scope| scope.id == id));
+            crate::render::render_jsonl_in_run(record, scope, &self.run_id)
+        }));
+        lines
     }
 
     pub fn scopes(&self) -> Vec<Scope> {

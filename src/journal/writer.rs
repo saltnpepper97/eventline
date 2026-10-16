@@ -12,6 +12,19 @@ use crate::render::{self, ConsoleStyle, FileStyle};
 
 /// Trait for writing journal records to various outputs.
 pub trait Writer: Send + Sync {
+    /// Whether this sink needs scope metadata. Text/custom sinks default to
+    /// false; sinks that override `write_scope` should also return true here.
+    fn wants_scope_metadata(&self) -> bool {
+        false
+    }
+    /// Set the identity of the journal feeding this writer. Existing custom
+    /// writers can ignore this; JSONL sinks use it to separate application runs.
+    fn set_run_id(&mut self, _run_id: &str) {}
+    /// Persist scope metadata even if the scope emits no events before a crash.
+    /// Text sinks and existing custom writers may ignore this callback.
+    fn write_scope(&mut self, _scope: &Scope) -> io::Result<()> {
+        Ok(())
+    }
     fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()>;
     fn flush(&mut self) -> io::Result<()>;
 }
@@ -42,12 +55,15 @@ pub struct AsyncWriter {
     tx: Option<mpsc::SyncSender<Msg>>,
     state: Arc<WriterState>,
     mode: WriteMode,
+    scope_metadata: bool,
     // We keep the handle so the thread isn't "detached forever".
     // Dropping joins to avoid leaving a runaway thread at shutdown.
     handle: Option<thread::JoinHandle<()>>,
 }
 
 enum Msg {
+    RunId(String),
+    Scope(Box<Scope>),
     Record(Box<Record>, Option<Box<Scope>>),
     Flush(mpsc::Sender<io::Result<()>>),
 }
@@ -70,6 +86,7 @@ impl AsyncWriter {
         mode: WriteMode,
     ) -> Self {
         let state = Arc::new(WriterState::default());
+        let scope_metadata = inner.wants_scope_metadata();
         match Self::try_spawn_with_state(inner, queue_cap, mode, state.clone()) {
             Ok(writer) => writer,
             Err(error) => {
@@ -78,6 +95,7 @@ impl AsyncWriter {
                     tx: None,
                     state,
                     mode,
+                    scope_metadata,
                     handle: None,
                 }
             }
@@ -100,6 +118,7 @@ impl AsyncWriter {
         state: Arc<WriterState>,
     ) -> io::Result<Self> {
         let (tx, rx) = mpsc::sync_channel::<Msg>(queue_cap.max(1));
+        let scope_metadata = inner.wants_scope_metadata();
         let worker_state = state.clone();
 
         let handle = thread::Builder::new()
@@ -110,6 +129,13 @@ impl AsyncWriter {
                     let mut pending_error = None;
                     while let Ok(msg) = rx.recv() {
                         match msg {
+                            Msg::RunId(run_id) => w.set_run_id(&run_id),
+                            Msg::Scope(scope) => {
+                                if let Err(error) = w.write_scope(&scope) {
+                                    worker_state.record_error("writing scope metadata", &error);
+                                    pending_error.get_or_insert(error);
+                                }
+                            }
                             Msg::Record(rec, scope) => {
                                 if let Err(error) = w.write_record(&rec, scope.as_deref()) {
                                     worker_state.record_error("writing record", &error);
@@ -140,6 +166,7 @@ impl AsyncWriter {
             tx: Some(tx),
             state,
             mode,
+            scope_metadata,
             handle: Some(handle),
         })
     }
@@ -156,6 +183,30 @@ impl AsyncWriter {
         let error = io::Error::new(io::ErrorKind::BrokenPipe, message.to_string());
         self.state.record_error("background writer queue", &error);
         error
+    }
+
+    fn enqueue(&self, msg: Msg) -> io::Result<()> {
+        let Some(tx) = &self.tx else {
+            self.state.drop_record();
+            return Err(self.unavailable("eventline async writer is shut down"));
+        };
+        if self.mode == WriteMode::Blocking {
+            return tx.send(msg).map_err(|_| {
+                self.state.drop_record();
+                self.unavailable("eventline async writer thread is not available")
+            });
+        }
+        match tx.try_send(msg) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.state.drop_record();
+                Ok(())
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                self.state.drop_record();
+                Err(self.unavailable("eventline async writer thread is not available"))
+            }
+        }
     }
 }
 
@@ -174,31 +225,30 @@ impl Drop for AsyncWriter {
 }
 
 impl Writer for AsyncWriter {
+    fn wants_scope_metadata(&self) -> bool {
+        self.scope_metadata
+    }
+    fn set_run_id(&mut self, run_id: &str) {
+        if let Some(tx) = &self.tx
+            && tx.send(Msg::RunId(run_id.to_string())).is_ok()
+        {
+            return;
+        }
+        self.unavailable("eventline async writer thread is not available");
+    }
+
+    fn write_scope(&mut self, scope: &Scope) -> io::Result<()> {
+        if !self.scope_metadata {
+            return Ok(());
+        }
+        self.enqueue(Msg::Scope(Box::new(scope.clone())))
+    }
+
     fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
         let rec = Box::new(record.clone());
         let sc = scope.cloned().map(Box::new);
 
-        let Some(tx) = &self.tx else {
-            self.state.drop_record();
-            return Err(self.unavailable("eventline async writer is shut down"));
-        };
-        if self.mode == WriteMode::Blocking {
-            return tx.send(Msg::Record(rec, sc)).map_err(|_| {
-                self.state.drop_record();
-                self.unavailable("eventline async writer thread is not available")
-            });
-        }
-        match tx.try_send(Msg::Record(rec, sc)) {
-            Ok(()) => Ok(()),
-            Err(mpsc::TrySendError::Full(_)) => {
-                self.state.drop_record();
-                Ok(())
-            }
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                self.state.drop_record();
-                Err(self.unavailable("eventline async writer thread is not available"))
-            }
-        }
+        self.enqueue(Msg::Record(rec, sc))
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -273,28 +323,46 @@ impl Writer for StdoutWriter {
 pub struct FileWriter {
     file: File,
     style: FileStyle,
+    run_id: String,
 }
 
 impl FileWriter {
     pub fn new(path: impl AsRef<Path>) -> io::Result<Self> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
-
-        Ok(Self {
-            file,
-            style: FileStyle::default(),
-        })
+        Self::with_style(path, FileStyle::default())
     }
 
     pub fn with_style(path: impl AsRef<Path>, style: FileStyle) -> io::Result<Self> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
 
-        Ok(Self { file, style })
+        Ok(Self {
+            file,
+            style,
+            run_id: crate::format::new_run_id(),
+        })
     }
 }
 
 impl Writer for FileWriter {
+    fn wants_scope_metadata(&self) -> bool {
+        self.style.format == crate::render::FileFormat::Jsonl
+    }
+    fn set_run_id(&mut self, run_id: &str) {
+        self.run_id = run_id.to_string();
+    }
+
+    fn write_scope(&mut self, scope: &Scope) -> io::Result<()> {
+        if self.style.format == crate::render::FileFormat::Jsonl {
+            writeln!(
+                self.file,
+                "{}",
+                render::render_scope_jsonl(scope, &self.run_id)
+            )?;
+        }
+        Ok(())
+    }
+
     fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
-        let line = render::render_file(record, scope, self.style);
+        let line = render::render_file_in_run(record, scope, self.style, &self.run_id);
         writeln!(self.file, "{line}")
     }
 
@@ -313,6 +381,7 @@ pub struct RotatingFileWriter {
     style: FileStyle,
     policy: LogPolicy,
     current_size: u64,
+    run_id: String,
 }
 
 impl RotatingFileWriter {
@@ -355,6 +424,7 @@ impl RotatingFileWriter {
             style,
             policy,
             current_size,
+            run_id: crate::format::new_run_id(),
         })
     }
 
@@ -381,11 +451,8 @@ impl RotatingFileWriter {
         self.current_size = 0;
         Ok(())
     }
-}
 
-impl Writer for RotatingFileWriter {
-    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
-        let line = render::render_file(record, scope, self.style);
+    fn write_line(&mut self, line: &str) -> io::Result<()> {
         let bytes = line.as_bytes();
         let write_len = bytes.len() as u64 + 1;
 
@@ -400,6 +467,31 @@ impl Writer for RotatingFileWriter {
         self.file.write_all(b"\n")?;
         self.current_size += write_len;
         Ok(())
+    }
+}
+
+impl Writer for RotatingFileWriter {
+    fn wants_scope_metadata(&self) -> bool {
+        self.style.format == crate::render::FileFormat::Jsonl
+    }
+    fn set_run_id(&mut self, run_id: &str) {
+        self.run_id = run_id.to_string();
+    }
+
+    fn write_scope(&mut self, scope: &Scope) -> io::Result<()> {
+        if self.style.format == crate::render::FileFormat::Jsonl {
+            self.write_line(&render::render_scope_jsonl(scope, &self.run_id))?;
+        }
+        Ok(())
+    }
+
+    fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
+        self.write_line(&render::render_file_in_run(
+            record,
+            scope,
+            self.style,
+            &self.run_id,
+        ))
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -442,6 +534,26 @@ impl Default for MultiWriter {
 }
 
 impl Writer for MultiWriter {
+    fn wants_scope_metadata(&self) -> bool {
+        self.writers
+            .iter()
+            .any(|writer| writer.wants_scope_metadata())
+    }
+    fn set_run_id(&mut self, run_id: &str) {
+        for writer in &mut self.writers {
+            writer.set_run_id(run_id);
+        }
+    }
+
+    fn write_scope(&mut self, scope: &Scope) -> io::Result<()> {
+        let mut first_error = None;
+        for writer in &mut self.writers {
+            if let Err(error) = writer.write_scope(scope) {
+                first_error.get_or_insert(error);
+            }
+        }
+        first_error.map_or(Ok(()), Err)
+    }
     fn write_record(&mut self, record: &Record, scope: Option<&Scope>) -> io::Result<()> {
         let mut first_error = None;
         for w in &mut self.writers {
@@ -623,6 +735,48 @@ mod tests {
         drop(writer);
         assert_eq!(state.snapshot().failed_operations, 2);
         assert!(state.snapshot().last_error.unwrap().contains("shutdown"));
+    }
+
+    #[test]
+    fn scope_metadata_failures_are_reported_by_diagnostics_and_flush() {
+        struct FailedScope;
+        impl Writer for FailedScope {
+            fn wants_scope_metadata(&self) -> bool {
+                true
+            }
+            fn write_scope(&mut self, _: &crate::core::Scope) -> io::Result<()> {
+                Err(io::Error::other("scope write failed"))
+            }
+            fn write_record(
+                &mut self,
+                _: &Record,
+                _: Option<&crate::core::Scope>,
+            ) -> io::Result<()> {
+                Ok(())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut journal = crate::Journal::new();
+        let id = journal.enter_scope("scope");
+        let mut writer = AsyncWriter::spawn(Box::new(FailedScope), 8);
+        writer.write_scope(&journal.get_scope(id).unwrap()).unwrap();
+        assert!(
+            writer
+                .flush()
+                .unwrap_err()
+                .to_string()
+                .contains("scope write failed")
+        );
+        assert_eq!(writer.diagnostics().failed_operations, 1);
+        assert!(
+            writer
+                .diagnostics()
+                .last_error
+                .unwrap()
+                .contains("writing scope metadata")
+        );
     }
 
     struct CountingWriter {
