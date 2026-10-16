@@ -105,6 +105,7 @@ impl<F> Drop for WithScopeContext<F> {
 /// cancellation records Aborted, and unwinding records Failure. Completion
 /// does not inspect the output (including `Result` values). A future dropped
 /// before its first poll does not enter a scope.
+/// Use [`scope_async_result`] to derive success or failure from a `Result`.
 ///
 /// This works with any executor. Wrap separately spawned or concurrently
 /// polled operations individually; wrapping an outer task alone cannot isolate
@@ -132,6 +133,45 @@ pub fn scope_async<'a, F: Future + 'a>(
         let output = future.await;
         guard.0.exit(Outcome::Success);
         output
+    })
+}
+
+/// Run a future in a new scope whose outcome follows its returned `Result`.
+///
+/// `Ok` records Success, `Err` records Failure, cancellation after the first
+/// poll records Aborted, and unwinding records Failure. The original result is
+/// returned without cloning or formatting its contents. A future dropped
+/// before its first poll creates no scope.
+///
+/// Context is captured at this call site, just like [`scope_async`]. Wrap each
+/// spawned or concurrently polled operation separately. For explicit abortion,
+/// drop the pending future; an error value representing cancellation still
+/// counts as `Err` and records Failure. Use a guard inside [`ScopeContext::wrap`]
+/// when application-specific errors need a different outcome.
+///
+/// ```
+/// # async fn example() {
+/// let result = eventline::scope_async_result("config", async {
+///     Err::<(), _>("invalid config")?;
+///     Ok(())
+/// }).await;
+/// assert_eq!(result, Err("invalid config"));
+/// # }
+/// ```
+pub fn scope_async_result<'a, T, E, F>(
+    name: impl Into<String>,
+    future: F,
+) -> impl Future<Output = Result<T, E>> + 'a
+where
+    F: Future<Output = Result<T, E>> + 'a,
+{
+    let context = ScopeContext::capture();
+    let name = name.into();
+    context.wrap(async move {
+        let mut guard = AsyncScopeGuard(super::scope_guard(name));
+        let result = future.await;
+        guard.0.exit_result(&result);
+        result
     })
 }
 

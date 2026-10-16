@@ -116,6 +116,8 @@ macro_rules! error {
 /// - `scope!("config", success="loaded", failure="failed", aborted="aborted", { ... })`
 ///
 /// Exit messages only appear on the scope exit ("done:") line.
+/// This general-purpose macro does not inspect returned values. Use
+/// [`crate::scope_result!`] to record Failure when a block returns `Err`.
 ///
 /// If the block contains `.await`, run it inside [`crate::scope_async`] or
 /// [`crate::ScopeContext::wrap`]. Concurrently polled siblings each need their
@@ -182,5 +184,42 @@ macro_rules! scope {
             },
         );
         $block
+    }};
+}
+
+/// Run a synchronous `Result` block in a scope, recording its actual outcome.
+///
+/// `Ok` records Success, `Err` records Failure, and unwinding records Failure.
+/// The original result is returned. `?` and `return` inside the block exit an
+/// internal closure; use `?` on the macro's result when the surrounding function
+/// should return early too. `break` and `continue` cannot target outer loops.
+/// Use [`crate::scope_async_result`] for async work.
+///
+/// Optional `success`, `failure`, and `aborted` exit messages use the same keys
+/// as [`crate::scope!`]. Explicit abortion is available through
+/// [`crate::RuntimeScopeGuard::aborted`].
+///
+/// ```
+/// fn load_config() -> Result<(), &'static str> {
+///     eventline::scope_result!("config", failure = "invalid", {
+///         Err("missing config")?;
+///         Ok(())
+///     })
+/// }
+/// assert_eq!(load_config(), Err("missing config"));
+/// ```
+#[macro_export]
+macro_rules! scope_result {
+    ($name:expr, $block:block $(,)?) => {{
+        $crate::runtime::scope_result($name, || $block)
+    }};
+    ($name:expr, $($message:ident = $value:expr,)+ $block:block $(,)?) => {{
+        let mut guard = $crate::core::RuntimeScopeGuard::enter($name);
+        let mut messages = $crate::core::ExitMessages::default();
+        $(messages.$message = Some(($value).to_string());)+
+        $crate::runtime::set_scope_exit_messages(guard.id(), messages);
+        let result = (|| $block)();
+        guard.exit_result(&result);
+        result
     }};
 }
