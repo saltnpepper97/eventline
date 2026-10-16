@@ -8,6 +8,8 @@ An application flight recorder for Rust: structured execution history, scoped ou
 
 eventline records structured execution history (events + scopes) first. Console logs, text files, JSONL files, and replay helpers are views over that journal.
 
+See the [changelog](CHANGELOG.md) for version 0.10.0 changes and upgrade notes.
+
 ---
 
 ## Features
@@ -51,7 +53,7 @@ This makes eventline useful for post-mortems, debugging, and deterministic "what
 Add it to your project:
 
     [dependencies]
-    eventline = "0.9.0"
+    eventline = "0.10.0"
 
 Initialize once early:
 
@@ -503,7 +505,7 @@ before/after results, workload sizes, and indexing tradeoffs.
 Core eventline stays dependency-light. Existing instrumentation can be bridged with optional features:
 
     [dependencies]
-    eventline = { version = "0.9.0", features = ["log", "tracing"] }
+    eventline = { version = "0.10.0", features = ["log", "tracing"] }
 
 `log` facade bridge:
 
